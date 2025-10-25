@@ -1,0 +1,56 @@
+{
+ 
+  "scenarios": [
+    {
+      "scenario_id": "a1_1",
+      "name": "A1",
+      "description": "Complex multi-project release coordination with conditional workflows and cross-team dependencies",
+      "prompts": [
+        {
+          "prompt_text": "We're facing a critical situation with our Q4 release across WEB, MOB, and INFRA projects. I need you to perform a comprehensive release readiness assessment and coordination workflow. First, search for all issues across these three projects. For any issues found in 'Open' or 'Reopened' status, escalate their priority to 'Highest' and add a comment 'Q4 Release Critical - Immediate attention required'. Next, identify all issues that are assigned to Sarah Johnson across these projects and redistribute them evenly between Mike Chen and Alex Rodriguez using round-robin assignment, but only if those issues are not already in 'Done' status. Then, for each project (WEB, MOB, INFRA), create a release coordination epic with summary 'Q4 Release Coordination - [PROJECT_NAME]' assigned to Emily Davis with 'Highest' priority. After creating these epics, search for all 'In Progress' issues in each project and link them to their respective coordination epic using 'is subtask of' relationship. For any issues that have been 'In Progress' for more than 30 days (check the changelog), transition them to 'Closed' status and add a comment 'Long-running task - requires management review'. Finally, create a master release status report by adding a comprehensive comment to WEB-1 that summarizes: total issues per project, status distribution, closed issues count, and reassignment summary. If more than 20% of total release issues are closed or high-priority, create an additional escalation issue 'Q4 Release Risk Mitigation' as Epic type in WEB project with 'Highest' priority assigned to the project lead.",
+          "expected_tools": [
+            "enhanced_search_get",
+            "bulk_edit_issues",
+            "add_issue_comment",
+            "assign_issue",
+            "bulk_create_issues",
+            "update_issue",
+            "do_transition",
+            "get_issue_changelog",
+            "get_issue",
+            "find_assignable_users"
+          ],
+          "verifier": {
+            "verifier_type": "database_state",
+            "validation_config": {
+              "query": "SELECT COUNT(*) FROM issue i JOIN issue_type it ON i.issue_type_id = it.id JOIN project p ON i.project_id = p.id JOIN issue_priority ip ON ip.id = i.priority_id WHERE it.name = 'Epic' AND i.summary LIKE 'Q4 Release Coordination%' AND p.key IN ('WEB', 'MOB', 'INFRA') and i.priority_id = 1",
+              "expected_value": 3,
+              "comparison_type": "equals"
+            },
+            "name": null
+          },
+          "restricted_tools": null
+        }
+      ],
+      "metadata": {
+        "difficulty": "model_breaking",
+        "tool_calls": 10,
+        "complexity": "highly_complex_multi_project_workflow",
+        "pass_at_8_estimate": "10%",
+        "challenge_factors": [
+          "Multi-project coordination",
+          "Conditional logic based on status and time",
+          "Complex search and filtering requirements",
+          "Round-robin assignment logic",
+          "Epic creation and linking",
+          "Changelog analysis for time-based decisions",
+          "Percentage-based conditional escalation",
+          "Comprehensive status reporting",
+          "Cross-team dependency management",
+          "Multiple workflow transitions"
+        ]
+      },
+      "conversation_mode": true
+    }
+  ]
+}

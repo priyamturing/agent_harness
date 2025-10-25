@@ -1,0 +1,49 @@
+{
+
+  "scenarios": [
+    {
+      "scenario_id": "critical_defect_registration_with_transition_verification_1",
+      "name": "Critical Defect Registration with Transition Verification",
+      "description": "Register a critical authentication defect in the WEB project, assign it to Sarah Johnson, add an urgent comment, verify available transitions, and move it to To Do status.",
+      "context": {},
+      "prompts": [
+        {
+          "prompt_text": "In our development team's tracking platform, a highly critical bug has surfaced within the WEB project. The authentication interface is not functioning correctly, with the login button failing to respond on the development site. Please record this as a new bug with summary 'Critical WEB Auth Failure' and the description including 'unresponsive login button on dev environment, blocking user sessions', providing a thorough explanation of the malfunction. Direct this matter to the lead engineer, Sarah Johnson, include a note underscoring the urgency due to its impact on user access with comment 'high urgency due to total user access disruption', and move the issue to To - Do state.",
+          "expected_tools": [
+            "bulk_create_issues",
+            "find_assignable_users",
+            "assign_issue",
+            "add_issue_comment",
+            "get_transitions",
+            "do_transition"
+          ],
+          "verifier": [
+            {
+              "verifier_type": "database_state",
+              "validation_config": {
+                "query": "SELECT COUNT(*) FROM issue WHERE project_id = 1 and issue_type_id = 1 AND summary LIKE '%Critical WEB Auth Failure%' AND Lower(description) LIKE '%unresponsive login button on dev environment, blocking user sessions%' AND status_id = 6 and assignee_id = 2;",
+                "expected_value": 1,
+                "comparison_type": "equals"
+              },
+              "name": null
+            },
+            {
+              "verifier_type": "database_state",
+              "validation_config": {
+                "query": "SELECT COUNT(*) FROM comment WHERE issue_id = (SELECT id FROM issue WHERE summary LIKE '%Critical WEB Auth Failure%' and assignee_id = 2) AND Lower(body) LIKE '%high urgency due to total user access disruption%';",
+                "expected_value": 1,
+                "comparison_type": "equals"
+              },
+              "name": null
+            }
+          ],
+          "restricted_tools": null
+        }
+      ],
+      "metadata": {
+        "difficulty": "hard"
+      },
+      "conversation_mode": true
+    }
+  ]
+}

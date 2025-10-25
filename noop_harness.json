@@ -1,0 +1,15 @@
+{
+  "scenarios": [
+    {
+      "scenario_id": "noop_scenario",
+      "name": "No-op Scenario",
+      "description": "Minimal harness used to verify MCP connectivity without invoking an LLM.",
+      "context": {},
+      "prompts": [],
+      "metadata": {
+        "difficulty": "noop"
+      },
+      "conversation_mode": false
+    }
+  ]
+}

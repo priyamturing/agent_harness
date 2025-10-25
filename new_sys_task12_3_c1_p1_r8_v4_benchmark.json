@@ -1,0 +1,74 @@
+{
+ 
+  "scenarios": [
+    {
+      "scenario_id": "pm_create_new_tasks_1",
+      "name": "pm create new tasks",
+      "description": "Project Manager creates shopping cart feature tasks across web and mobile projects",
+      "context": {},
+      "prompts": [
+        {
+          "prompt_text": "I'm Emily Davis. We need to start the shopping cart feature across web and mobile. I want to create a new task in the WEB project titled 'Shopping Cart Backend API' with description 'Build REST API for cart operations - add/remove items, quantity updates, price calculation, and session management', assign it to Alex Rodriguez, add labels 'backend' and 'api', and leave comment 'Alex, this is our next priority. Please design the API to support both web and mobile clients.' Also create a task in MOB project titled 'Shopping Cart UI Mobile' with description 'Implement shopping cart interface for mobile app with native gestures and offline support', assign it to Sarah Johnson, add labels 'mobile' and 'frontend', and comment 'Sarah, please sync with Alex on the API endpoints. We need swipe-to-remove and pull-to-refresh functionality.'",
+          "expected_tools": [
+            "create_issue",
+            "find_assignable_users",
+            "update_issue",
+            "add_issue_comment"
+          ],
+          "verifier": [
+            {
+              "verifier_type": "database_state",
+              "validation_config": {
+                "query": "SELECT COUNT(*) FROM issue i JOIN project p ON i.project_id = p.id WHERE ((i.summary = 'Shopping Cart Backend API' AND p.key = 'WEB' AND i.assignee_id = 5) OR (i.summary = 'Shopping Cart UI Mobile' AND p.key = 'MOB' AND i.assignee_id = 2));",
+                "expected_value": 2,
+                "comparison_type": "equals"
+              },
+              "name": null
+            },
+            {
+              "verifier_type": "database_state",
+              "validation_config": {
+                "query": "SELECT COUNT(*) FROM issue_label_association ila JOIN issue_label il ON ila.label_id = il.id JOIN issue i ON ila.issue_id = i.id WHERE i.summary = 'Shopping Cart Backend API' AND il.name IN ('backend', 'api');",
+                "expected_value": 2,
+                "comparison_type": "equals"
+              },
+              "name": null
+            },
+            {
+              "verifier_type": "database_state",
+              "validation_config": {
+                "query": "SELECT COUNT(*) FROM issue_label_association ila JOIN issue_label il ON ila.label_id = il.id JOIN issue i ON ila.issue_id = i.id WHERE i.summary = 'Shopping Cart UI Mobile' AND il.name IN ('mobile', 'frontend');",
+                "expected_value": 2,
+                "comparison_type": "equals"
+              },
+              "name": null
+            },
+            {
+              "verifier_type": "database_state",
+              "validation_config": {
+                "query": "SELECT COUNT(*) FROM comment c JOIN issue i ON c.issue_id = i.id WHERE i.summary = 'Shopping Cart Backend API'  AND c.body LIKE '%Alex, this is our next priority. Please design the API to support both web and mobile clients.%';",
+                "expected_value": 1,
+                "comparison_type": "equals"
+              },
+              "name": null
+            },
+            {
+              "verifier_type": "database_state",
+              "validation_config": {
+                "query": "SELECT COUNT(*) FROM comment c JOIN issue i ON c.issue_id = i.id WHERE i.summary = 'Shopping Cart UI Mobile'  AND c.body LIKE '%Sarah, please sync with Alex on the API endpoints. We need swipe-to-remove and pull-to-refresh functionality.%';",
+                "expected_value": 1,
+                "comparison_type": "equals"
+              },
+              "name": null
+            }
+          ],
+          "restricted_tools": null
+        }
+      ],
+      "metadata": {
+        "difficulty": "medium"
+      },
+      "conversation_mode": true
+    }
+  ]
+}
