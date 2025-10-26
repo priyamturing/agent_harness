@@ -69,15 +69,14 @@ def _compare(actual: object, expected: object, comparison: str | None) -> bool:
     return False
 
 
-async def run_verifiers(
+async def evaluate_verifiers(
     scenario: Scenario,
     *,
     sql_runner_url: str,
     database_id: str,
-    console: Console,
     client: Optional[httpx.AsyncClient] = None,
 ) -> list[VerifierResult]:
-    """Execute all verifiers associated with a scenario."""
+    """Execute verifiers and return their results without rendering output."""
 
     verifiers = _collect_verifiers(scenario)
     if not verifiers:
@@ -90,12 +89,7 @@ async def run_verifiers(
     results: list[VerifierResult] = []
 
     try:
-        for idx, verifier in enumerate(verifiers, start=1):
-            console.print(
-                f"[cyan]Running verifier {idx}/{len(verifiers)}[/cyan]: "
-                f"{verifier.name or verifier.verifier_type}"
-            )
-
+        for verifier in verifiers:
             if verifier.verifier_type != "database_state":
                 results.append(
                     VerifierResult(
@@ -168,6 +162,48 @@ async def run_verifiers(
         if owns_client:
             await client.aclose()
 
+    return results
+
+
+async def run_verifiers(
+    scenario: Scenario,
+    *,
+    sql_runner_url: str,
+    database_id: str,
+    console: Console,
+    client: Optional[httpx.AsyncClient] = None,
+) -> list[VerifierResult]:
+    """Execute verifiers and render a summary table to the provided console."""
+
+    results = await evaluate_verifiers(
+        scenario,
+        sql_runner_url=sql_runner_url,
+        database_id=database_id,
+        client=client,
+    )
+
+    if not results:
+        return results
+
+    table = Table(title="Verifier results", show_lines=True)
+    table.add_column("Verifier")
+    table.add_column("Comparison")
+    table.add_column("Expected")
+    table.add_column("Actual")
+    table.add_column("Status")
+
+    for result in results:
+        comparison = result.comparison_type or "-"
+        expected = repr(result.expected_value)
+        actual = repr(result.actual_value) if result.error is None else "-"
+        status = "[green]PASS[/green]" if result.success else "[red]FAIL[/red]"
+        if result.error and not result.success:
+            status = f"[red]FAIL[/red]\n[dim]{result.error}[/dim]"
+
+        label = result.verifier.name or result.verifier.verifier_type
+        table.add_row(label, comparison, expected, actual, status)
+
+    console.print(table)
     return results
 
 

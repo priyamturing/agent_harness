@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 from uuid import uuid4
 
+import httpx
 import typer
 from rich.console import Console
 from rich.panel import Panel
@@ -18,7 +20,7 @@ from .prompts import load_scenarios
 from .providers import PROVIDERS, create_chat_model
 from .run_logging import ConsoleRunLogger, RunLogger, TextualRunLogger
 from .textual_ui import MultiRunApp
-from .verifier import render_verifier_summary, run_verifiers
+from .verifier import evaluate_verifiers
 from dotenv import load_dotenv
 
 console = Console()
@@ -51,6 +53,7 @@ async def _execute_run(
     model: Optional[str],
     temperature: float,
     max_output_tokens: Optional[int],
+    artifact_dir: Path,
 ) -> dict:
     run_database_id = str(uuid4())
     logger = logger_factory(run_label, run_database_id)
@@ -73,101 +76,139 @@ async def _execute_run(
         )
     )
 
+    resolved_model_name = model or PROVIDERS[provider].default_model
     model_instance = create_chat_model(
         provider,
         model=model,
         temperature=temperature,
         max_output_tokens=max_output_tokens,
     )
+    actual_model = getattr(model_instance, "model_name", resolved_model_name)
     logger.print(
         Panel(
             f"Using provider [bold]{provider}[/bold] with model "
-            f"[bold]{model or PROVIDERS[provider].default_model}[/bold]",
+            f"[bold]{actual_model}[/bold]",
             title=f"Run {run_label} LLM",
         )
     )
 
     run_summary = []
+    verifier_client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0))
 
-    for scenario in scenarios:
-        responses = await execute_scenario(
-            model_instance,
-            tools,
-            scenario,
-            tool_call_limit=DEFAULT_TOOL_CALL_LIMIT,
-            console=logger,  # type: ignore[arg-type]
-        )
-        final_response = responses[-1] if responses else None
-        if final_response:
-            logger.rule(f"Scenario {scenario.scenario_id} final response")
-            final_text, final_reasoning, _ = extract_ai_message_content(final_response)
-            for idx, chunk in enumerate(final_reasoning, start=1):
-                label_text = "Reasoning" if len(final_reasoning) == 1 else f"Reasoning {idx}"
-                logger.print(f"[yellow]{label_text}[/yellow]: {chunk}")
-            if final_text:
-                logger.print(final_text)
+    try:
+        for scenario in scenarios:
+            responses = await execute_scenario(
+                model_instance,
+                tools,
+                scenario,
+                tool_call_limit=DEFAULT_TOOL_CALL_LIMIT,
+                logger=logger,
+                sql_runner_url=DEFAULT_SQL_RUNNER_URL,
+                database_id=run_database_id,
+                verifier_client=verifier_client,
+            )
+            final_response = responses[-1] if responses else None
+            if final_response:
+                logger.rule(f"Scenario {scenario.scenario_id} final response")
+                final_text, final_reasoning, _ = extract_ai_message_content(final_response)
+                for idx, chunk in enumerate(final_reasoning, start=1):
+                    label_text = "Reasoning" if len(final_reasoning) == 1 else f"Reasoning {idx}"
+                    logger.print(f"[yellow]{label_text}[/yellow]: {chunk}")
+                if final_text:
+                    logger.print(final_text)
 
-        verifier_results = await run_verifiers(
-            scenario,
-            sql_runner_url=DEFAULT_SQL_RUNNER_URL,
-            database_id=run_database_id,
-            console=logger,  # type: ignore[arg-type]
+            final_results = await evaluate_verifiers(
+                scenario,
+                sql_runner_url=DEFAULT_SQL_RUNNER_URL,
+                database_id=run_database_id,
+                client=verifier_client,
+            )
+            if final_results:
+                logger.update_verifier_status(final_results)
+            run_summary.append((scenario.scenario_id, final_results))
+    finally:
+        await verifier_client.aclose()
+
+    artifacts = logger.get_artifacts()
+    artifacts["run_label"] = run_label
+    artifacts["database_id"] = run_database_id
+    artifacts["provider"] = provider
+    artifacts["model"] = actual_model
+    artifacts["scenarios"] = []
+    for scenario_id, final_results in run_summary:
+        artifacts["scenarios"].append(
+            {
+                "scenario_id": scenario_id,
+                "verifiers": [
+                    {
+                        "name": result.verifier.name or result.verifier.verifier_type,
+                        "comparison": result.comparison_type,
+                        "expected": result.expected_value,
+                        "actual": result.actual_value,
+                        "success": result.success,
+                        "error": result.error,
+                    }
+                    for result in final_results
+                ],
+            }
         )
-        if verifier_results:
-            logger.rule(f"Scenario {scenario.scenario_id} verifications")
-            render_verifier_summary(verifier_results, console=logger)  # type: ignore[arg-type]
-        run_summary.append((scenario.scenario_id, verifier_results))
+
+    artifact_file = artifact_dir / f"run_{run_label}.json"
+    artifact_file.write_text(json.dumps(artifacts, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return {
         "run": run_label,
         "database_id": run_database_id,
         "summary": run_summary,
+        "model": actual_model,
+        "artifact_path": str(artifact_file),
     }
 
 
 async def _run_plain(
     *,
-    runs: int,
+    run_configs: list[dict[str, Optional[str]]],
     scenarios,
     provider: str,
-    model: Optional[str],
     temperature: float,
     max_output_tokens: Optional[int],
+    artifact_dir: Path,
 ) -> None:
-    run_labels = [str(i + 1) for i in range(runs)]
+    multiple_runs = len(run_configs) > 1
 
     def logger_factory(label: str, _db_id: str) -> RunLogger:
-        prefix = f"Run {label}" if runs > 1 else None
+        prefix = f"Run {label}" if multiple_runs else None
         return ConsoleRunLogger(console, prefix=prefix)
 
     tasks = [
         _execute_run(
-            run_label=label,
+            run_label=config["label"],
             logger_factory=logger_factory,
             scenarios=scenarios,
             provider=provider,
-            model=model,
+            model=config["model"],
             temperature=temperature,
             max_output_tokens=max_output_tokens,
+            artifact_dir=artifact_dir,
         )
-        for label in run_labels
+        for config in run_configs
     ]
 
-    results = [await tasks[0]] if runs == 1 else await asyncio.gather(*tasks)
+    results = [await tasks[0]] if len(tasks) == 1 else await asyncio.gather(*tasks)
     _render_summary(results)
 
 
 async def _run_textual(
     *,
-    runs: int,
+    run_configs: list[dict[str, Optional[str]]],
     scenarios,
     provider: str,
-    model: Optional[str],
     temperature: float,
     max_output_tokens: Optional[int],
+    artifact_dir: Path,
 ) -> None:
-    run_labels = [str(i + 1) for i in range(runs)]
-    queues: Dict[str, asyncio.Queue[str]] = {label: asyncio.Queue() for label in run_labels}
+    run_labels = [config["label"] for config in run_configs]
+    queues: Dict[str, asyncio.Queue[object]] = {label: asyncio.Queue() for label in run_labels}
 
     def logger_factory(label: str, _db_id: str) -> RunLogger:
         return TextualRunLogger(queues[label])
@@ -179,15 +220,16 @@ async def _run_textual(
         results = await asyncio.gather(
             *[
                 _execute_run(
-                    run_label=label,
+                    run_label=config["label"],
                     logger_factory=logger_factory,
                     scenarios=scenarios,
                     provider=provider,
-                    model=model,
+                    model=config["model"],
                     temperature=temperature,
                     max_output_tokens=max_output_tokens,
+                    artifact_dir=artifact_dir,
                 )
-                for label in run_labels
+                for config in run_configs
             ]
         )
     finally:
@@ -197,12 +239,35 @@ async def _run_textual(
     _render_summary(results)
 
 
+def _prepare_session_dir(base_name: str) -> Path:
+    idx = 1
+    while True:
+        candidate = Path(f"{base_name}_{idx}")
+        if not candidate.exists():
+            candidate.mkdir(parents=True)
+            return candidate
+        idx += 1
+
+
+def _build_run_configs(
+    provider: str, models: list[Optional[str]], runs: int
+) -> list[dict[str, Optional[str]]]:
+    configs: list[dict[str, Optional[str]]] = []
+    for model_name in models:
+        alias = (model_name or PROVIDERS[provider].default_model).replace("/", "_")
+        for idx in range(1, runs + 1):
+            label = f"{alias}-{idx}" if len(models) > 1 or runs > 1 else alias
+            configs.append({"label": label, "model": model_name})
+    return configs
+
+
 def _render_summary(results: list[dict]) -> None:
     summary_table = Table(title="Run summary")
     summary_table.add_column("Run", justify="right")
     summary_table.add_column("Database ID")
     summary_table.add_column("Scenarios")
     summary_table.add_column("Verifiers")
+    summary_table.add_column("Artifact")
 
     for result in results:
         total_scenarios = len(result["summary"])
@@ -215,6 +280,7 @@ def _render_summary(results: list[dict]) -> None:
             result["database_id"],
             str(total_scenarios),
             f"{passed}/{total_verifiers}" if total_verifiers else "0",
+            result.get("artifact_path", "-"),
         )
 
     console.print(summary_table)
@@ -239,9 +305,11 @@ def run(  # noqa: D417 - typer handles CLI docs
         case_sensitive=False,
         help="LLM provider to use (openai, anthropic, xai).",
     ),
-    model: Optional[str] = typer.Option(
+    model: List[str] = typer.Option(  # type: ignore[assignment]
         None,
-        help="Override the default model for the selected provider.",
+        "--model",
+        help="Override the default model for the selected provider. Supply multiple times to compare models.",
+        show_default=False,
     ),
     temperature: float = typer.Option(
         0.1,
@@ -291,6 +359,9 @@ def run(  # noqa: D417 - typer handles CLI docs
     if not scenarios:
         raise typer.BadParameter(f"No scenarios found in {prompt_source}")
 
+    model_list: list[Optional[str]] = list(model) if model else [None]
+    run_configs = _build_run_configs(provider_key, model_list, runs)
+
     ui_mode = ui.lower()
     valid_ui = {"auto", "plain", "textual"}
     if ui_mode not in valid_ui:
@@ -298,25 +369,28 @@ def run(  # noqa: D417 - typer handles CLI docs
             f"Invalid ui mode '{ui}'. Expected one of: {', '.join(sorted(valid_ui))}"
         )
     if ui_mode == "auto":
-        ui_mode = "textual" if runs > 1 else "plain"
+        ui_mode = "textual" if len(run_configs) > 1 else "plain"
+
+    session_dir = _prepare_session_dir(prompt_source.stem)
+    console.print(Panel(f"Storing run artifacts in [bold]{session_dir}[/bold]"))
 
     asyncio.run(
         _run_textual(
-            runs=runs,
+            run_configs=run_configs,
             scenarios=scenarios,
             provider=provider_key,
-            model=model,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
+            artifact_dir=session_dir,
         )
         if ui_mode == "textual"
         else _run_plain(
-            runs=runs,
+            run_configs=run_configs,
             scenarios=scenarios,
             provider=provider_key,
-            model=model,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
+            artifact_dir=session_dir,
         )
     )
 

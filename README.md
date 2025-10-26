@@ -10,12 +10,14 @@ This project provides a small LangChain-based CLI that drives a locally running 
   - OpenAI: `gpt-5-high` (mapped to `gpt-5` with reasoning effort set to `high`)
   - Anthropic: `claude-4.5-sonnet-reasoning`
   - xAI: `grok-4`
+- Launches multiple models in a single CLI invocation; pass `--model` more than once to fan out runs
 - Binds all MCP tools to the selected LLM so it can call them while solving the scenario
 - Streams any reasoning traces emitted by the model for easier debugging
 - Automatically provisions a unique MCP workspace each run by sending an `x-database-id` header
 - Requests OpenAI reasoning summaries and encrypted reasoning tokens so follow-up turns can reference prior cogitation if needed
-- After each scenario, runs the harness verifiers against the same database via the MCP SQL runner endpoint (`/api/sql-runner`)
+- Replays the harness verifiers after every MCP tool call (and again at the end of each scenario) so progress is visible in real time
 - Optional Textual-based UI so every parallel run can stream into its own terminal tab
+- Writes per-run JSON artifacts (conversation history, tool calls, verifier snapshots) under a session folder named after the harness file
 
 ## Installation
 
@@ -56,6 +58,7 @@ python -m jira_mcp_benchmark \
 Additional useful options:
 
 - `--model`: override the default model identifier for the chosen provider
+  (repeat the flag to evaluate multiple models in the same session)
 - `--temperature`: adjust sampling temperature (default `0.1`)
 - `--max-output-tokens`: limit the maximum number of generated tokens
 - `--harness-file`: select any benchmark JSON file without changing the default
@@ -72,10 +75,11 @@ When you run the command the CLI will:
 
 ## Notes
 
-- The CLI automatically targets the local Jira MCP server at `http://localhost:8015/mcp` using the `streamable_http` transport; adjust the code if your deployment differs.
+- The CLI automatically targets the local Jira MCP server at `http://localhost:8015/mcp` using the `http` transport; adjust the code if your deployment differs.
 - Each scenario allows up to 1000 MCP tool invocations by default; raise or lower the limit in `src/jira_mcp_benchmark/cli.py` if needed.
 - A fresh UUID is used for the `x-database-id` header on every invocation so each run operates against an isolated MCP database instance.
 - Verifier queries are executed via `POST /api/sql-runner` using the same `x-database-id`, so ensure that endpoint is reachable on the MCP host.
 - When running multiple parallel executions, the default `textual` UI gives each run its own tab so logs never interleave; switch back to `--ui plain` if you prefer classic console output.
+- Each CLI invocation creates a new session folder named `<harness>_<n>` containing one JSON artifact per run. Each artifact records the interleaved conversation, tool calls/results, and verifier snapshots in execution order.
 - The CLI uses LangChain's tool binding APIs; tool responses and final assistant messages are echoed to the terminal to aid debugging.
 - If you add new scenarios, simply update the JSON file—no code changes are required.

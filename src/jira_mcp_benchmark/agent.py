@@ -5,14 +5,18 @@ from __future__ import annotations
 import asyncio
 import json
 import textwrap
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+import httpx
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages.base import BaseMessage
 from langchain_core.tools import BaseTool
 from rich.console import Console
 from rich.table import Table
+
+from .run_logging import ConsoleRunLogger, RunLogger
+from .verifier import evaluate_verifiers
 
 from .prompts import Scenario, scenario_summary
 
@@ -143,8 +147,9 @@ async def _model_step(
     llm_with_tools: BaseChatModel,
     messages: List[BaseMessage],
     tool_map: Dict[str, BaseTool],
-    console: Console,
+    logger: RunLogger,
     remaining_tool_calls: Optional[int],
+    verifier_hook: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> Tuple[AIMessage, Optional[int]]:
     """Iteratively invoke the model while handling tool calls."""
 
@@ -155,9 +160,14 @@ async def _model_step(
             label_base = "Reasoning" if len(reasoning_chunks) == 1 else "Reasoning {}"
             for idx, chunk in enumerate(reasoning_chunks, start=1):
                 label = "Reasoning" if len(reasoning_chunks) == 1 else label_base.format(idx)
-                console.print(f"[yellow]{label}[/yellow]: {chunk}")
+                logger.print(f"[yellow]{label}[/yellow]: {chunk}")
         if primary_text:
-            console.print(f"[bold cyan]AI[/bold cyan]: {primary_text}")
+            logger.print(f"[bold cyan]AI[/bold cyan]: {primary_text}")
+        logger.log_message(
+            "assistant",
+            primary_text or "",
+            reasoning=reasoning_chunks if reasoning_chunks else None,
+        )
         messages.append(ai_message)
 
         tool_calls = ai_message.tool_calls or []
@@ -174,7 +184,7 @@ async def _model_step(
             tool = tool_map.get(tool_name)
             if tool is None:
                 error_text = f"Requested unknown tool '{tool_name}'."
-                console.print(f"[bold red]{error_text}[/bold red]")
+                logger.print(f"[bold red]{error_text}[/bold red]")
                 messages.append(
                     ToolMessage(
                         content=error_text,
@@ -184,16 +194,21 @@ async def _model_step(
                 )
                 continue
 
-            console.print(
+            raw_args = tool_call.get("args", {})
+            logger.print(
                 "[green]→ Invoking tool[/green] [bold]{name}[/bold] with args [italic]{args}[/italic]".format(
                     name=tool_name,
-                    args=_format_json(tool_call.get("args", {})),
+                    args=_format_json(raw_args),
                 )
             )
+            serialized_content: Optional[str] = None
+            raw_response: Optional[object] = None
+            tool_error = False
             try:
-                output = await _invoke_tool(tool, tool_call.get("args", {}))
+                output = await _invoke_tool(tool, raw_args)
                 serialized_obj = _serialize_tool_output(output)
-                console.print(f"[magenta]← Tool response[/magenta]: {_format_json(serialized_obj)}")
+                logger.print(f"[magenta]← Tool response[/magenta]: {_format_json(serialized_obj)}")
+                raw_response = serialized_obj
                 serialized_content = (
                     _format_json(serialized_obj)
                     if isinstance(serialized_obj, (dict, list))
@@ -201,7 +216,9 @@ async def _model_step(
                 )
             except Exception as exc:  # noqa: BLE001
                 serialized_content = f"Tool '{tool_name}' failed with error: {exc!r}"
-                console.print(f"[bold red]{serialized_content}[/bold red]")
+                logger.print(f"[bold red]{serialized_content}[/bold red]")
+                raw_response = serialized_content
+                tool_error = True
 
             messages.append(
                 ToolMessage(
@@ -211,6 +228,11 @@ async def _model_step(
                 )
             )
 
+            logger.log_tool_call(tool_name, raw_args, raw_response, error=tool_error)
+
+            if verifier_hook is not None:
+                await verifier_hook()
+
 
 async def execute_scenario(
     llm: BaseChatModel,
@@ -218,12 +240,15 @@ async def execute_scenario(
     scenario: Scenario,
     *,
     tool_call_limit: Optional[int] = 1000,
-    console: Console | None = None,
+    logger: RunLogger | None = None,
+    sql_runner_url: Optional[str] = None,
+    database_id: Optional[str] = None,
+    verifier_client: Optional[httpx.AsyncClient] = None,
 ) -> list[AIMessage]:
     """Run the prompts in a scenario and return the final assistant messages."""
 
-    if console is None:
-        console = Console(stderr=True)
+    if logger is None:
+        logger = ConsoleRunLogger(Console(stderr=True))
 
     tool_map: Dict[str, BaseTool] = {tool.name: tool for tool in tools}
 
@@ -233,7 +258,7 @@ async def execute_scenario(
     for line in scenario_summary(scenario).splitlines():
         key, _, value = line.partition(": ")
         intro.add_row(key, value)
-    console.print(intro)
+    logger.print(intro)
 
     instructions = textwrap.dedent(
         """
@@ -260,22 +285,43 @@ async def execute_scenario(
     messages: List[BaseMessage] = [
         SystemMessage(content=f"{instructions.strip()}\n\nScenario context:\n{scenario_summary(scenario)}")
     ]
+    scenario_details = scenario_summary(scenario)
+    logger.log_message("system", instructions.strip())
+    logger.log_message("system", scenario_details)
     llm_with_tools = llm.bind_tools(tools)
     final_ai_messages: List[AIMessage] = []
     remaining_tool_calls = tool_call_limit
 
     for index, prompt in enumerate(scenario.prompts, start=1):
-        console.rule(f"Prompt {index}")
+        logger.rule(f"Prompt {index}")
         user_message = HumanMessage(content=prompt.prompt_text)
         messages.append(user_message)
-        console.print(f"[bold magenta]User prompt[/bold magenta]: {prompt.prompt_text}")
+
+        logger.print(f"[bold magenta]User prompt[/bold magenta]: {prompt.prompt_text}")
+        logger.log_message("user", prompt.prompt_text)
+
+        verifier_hook: Optional[Callable[[], Awaitable[None]]] = None
+
+        if sql_runner_url and database_id:
+            async def incremental_verifiers() -> None:
+                results = await evaluate_verifiers(
+                    scenario,
+                    sql_runner_url=sql_runner_url,
+                    database_id=database_id,
+                    client=verifier_client,
+                )
+                if results:
+                    logger.update_verifier_status(results)
+
+            verifier_hook = incremental_verifiers
 
         ai_message, remaining_tool_calls = await _model_step(
             llm_with_tools=llm_with_tools,
             messages=messages,
             tool_map=tool_map,
-            console=console,
+            logger=logger,
             remaining_tool_calls=remaining_tool_calls,
+            verifier_hook=verifier_hook,
         )
         final_ai_messages.append(ai_message)
 

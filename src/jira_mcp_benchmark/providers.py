@@ -138,9 +138,27 @@ def create_chat_model(
         normalized_model = model_name.lower()
         if normalized_model == "gpt-5-high":
             model_name = "gpt-5"
-            extra_kwargs["reasoning"] = {"effort": "high", "summary": "auto"}
+            extra_kwargs["reasoning_effort"] = "high"
+        include = set(extra_kwargs.get("include") or [])
+        include.add("reasoning.encrypted_content")
+        extra_kwargs["include"] = sorted(include)
+        extra_kwargs["output_version"] = "responses/v1"
+        extra_kwargs["use_responses_api"] = True
+    elif config.name == "xai":
+        normalized_model = model_name.lower()
+        if normalized_model == "grok-4":
             extra_kwargs["output_version"] = "responses/v1"
-            extra_kwargs["include"] = ["reasoning.encrypted_content"]
+            include = set(extra_kwargs.get("include") or [])
+            include.add("reasoning.encrypted_content")
+            extra_kwargs["include"] = sorted(include)
+            extra_kwargs["use_responses_api"] = True
+            body = dict(extra_kwargs.get("extra_body") or {})
+            body.setdefault("use_encrypted_content", True)
+            extra_kwargs["extra_body"] = body
+    elif config.name == "anthropic":
+        normalized_model = model_name.lower()
+        if normalized_model == "claude-4.5-sonnet-reasoning":
+            extra_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 2000}
 
     return config.factory(model_name, temperature, max_output_tokens, extra_kwargs)
 
