@@ -255,7 +255,8 @@ async def execute_scenario(
     intro = Table(title=f"Scenario {scenario.scenario_id}")
     intro.add_column("Key", style="bold")
     intro.add_column("Value")
-    for line in scenario_summary(scenario).splitlines():
+    display_summary = scenario_summary(scenario, include_expected_tools=True)
+    for line in display_summary.splitlines():
         key, _, value = line.partition(": ")
         intro.add_row(key, value)
     logger.print(intro)
@@ -282,10 +283,10 @@ async def execute_scenario(
         """
     )
 
-    messages: List[BaseMessage] = [
-        SystemMessage(content=f"{instructions.strip()}\n\nScenario context:\n{scenario_summary(scenario)}")
-    ]
     scenario_details = scenario_summary(scenario)
+    messages: List[BaseMessage] = [
+        SystemMessage(content=f"{instructions.strip()}")
+    ]
     logger.log_message("system", instructions.strip())
     logger.log_message("system", scenario_details)
     llm_with_tools = llm.bind_tools(tools)

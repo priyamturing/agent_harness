@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from typing import List, Optional, Sequence
 
 
 @dataclass(frozen=True)
@@ -95,19 +95,21 @@ def load_scenarios(path: Path) -> list[Scenario]:
     return scenarios
 
 
-def scenario_summary(scenario: Scenario) -> str:
+def scenario_summary(scenario: Scenario, *, include_expected_tools: bool = False) -> str:
     """Return a short textual summary to feed models."""
 
-    expected_tool_names = {
-        tool for prompt in scenario.prompts for tool in prompt.expected_tools
-    }
-    tool_list = ", ".join(sorted(expected_tool_names)) if expected_tool_names else "N/A"
-
-    parts: Iterable[str] = (
+    parts: list[str] = [
         f"Scenario: {scenario.name}",
         f"ID: {scenario.scenario_id}",
         f"Description: {scenario.description}",
         f"Conversation mode: {'enabled' if scenario.conversation_mode else 'disabled'}",
-        f"Expected tools: {tool_list}",
-    )
+    ]
+
+    if include_expected_tools:
+        expected_tool_names = {
+            tool for prompt in scenario.prompts for tool in prompt.expected_tools
+        }
+        tool_list = ", ".join(sorted(expected_tool_names)) if expected_tool_names else "N/A"
+        parts.append(f"Expected tools: {tool_list}")
+
     return "\n".join(parts)

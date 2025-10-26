@@ -17,7 +17,8 @@ This project provides a small LangChain-based CLI that drives a locally running 
 - Requests OpenAI reasoning summaries and encrypted reasoning tokens so follow-up turns can reference prior cogitation if needed
 - Replays the harness verifiers after every MCP tool call (and again at the end of each scenario) so progress is visible in real time
 - Optional Textual-based UI so every parallel run can stream into its own terminal tab
-- Writes per-run JSON artifacts (conversation history, tool calls, verifier snapshots) under a session folder named after the harness file
+- Writes per-run JSON artifacts (conversation history, tool calls, verifier snapshots) inside `results/`, under a session folder named after the harness file
+- Captures a session manifest so you can revisit prior runs with `--view` in either the Textual UI or plain console mode
 
 ## Installation
 
@@ -49,7 +50,7 @@ export XAI_API_KEY=...
 
 ```bash
 python -m jira_mcp_benchmark \
-  --harness-file old_sample_new_system_1_benchmark.json \
+  --harness-file harness/old_sample_new_system_1_benchmark.json \
   --env-file .env \
   --runs 3
 ```
@@ -63,6 +64,9 @@ Additional useful options:
 - `--env-file`: load environment variable overrides from a specific `.env` file
 - `--runs`: launch multiple parallel executions, each with its own MCP database
 - `--ui`: choose `textual` to open a multi-pane terminal UI (default `auto` picks Textual when `--runs > 1`)
+- `--view`: replay a saved session (see below)
+
+You must provide either `--harness-file` or `--prompt-file`; the CLI will exit if neither is supplied.
 
 When you run the command the CLI will:
 
@@ -71,6 +75,26 @@ When you run the command the CLI will:
 3. Instantiate the requested LLM
 4. Execute every prompt sequentially without pausing for user confirmation
 
+## Replaying saved sessions
+
+Each invocation writes a manifest plus per-run artifacts inside `results/` in a folder named `<harness>_<n>`. You can revisit those runs at any time:
+
+```bash
+# List all saved sessions (newest first)
+python -m jira_mcp_benchmark --view list
+
+# Launch an interactive picker (arrow keys to navigate)
+python -m jira_mcp_benchmark --view
+
+# Replay a specific session in Textual UI
+python -m jira_mcp_benchmark --view new_sys_task13_7_c1_p1_r8_1_benchmark_4 --ui textual
+
+# Replay the same session in plain console mode
+python -m jira_mcp_benchmark --view new_sys_task13_7_c1_p1_r8_1_benchmark_4 --ui plain
+```
+
+While replaying, the Textual UI rebuilds the original log panes and live verifier table for each run. Plain mode streams the saved log output back to the console.
+
 ## Notes
 
 - The CLI automatically targets the local Jira MCP server at `http://localhost:8015/mcp` using the `http` transport; adjust the code if your deployment differs.
@@ -78,6 +102,6 @@ When you run the command the CLI will:
 - A fresh UUID is used for the `x-database-id` header on every invocation so each run operates against an isolated MCP database instance.
 - Verifier queries are executed via `POST /api/sql-runner` using the same `x-database-id`, so ensure that endpoint is reachable on the MCP host.
 - When running multiple parallel executions, the default `textual` UI gives each run its own tab so logs never interleave; switch back to `--ui plain` if you prefer classic console output.
-- Each CLI invocation creates a new session folder named `<harness>_<n>` containing one JSON artifact per run. Each artifact records the interleaved conversation, tool calls/results, and verifier snapshots in execution order.
+- Each CLI invocation creates a new session folder under `results/` named `<harness>_<n>` containing one JSON artifact per run. Each artifact records the interleaved conversation, tool calls/results, and verifier snapshots in execution order.
 - The CLI uses LangChain's tool binding APIs; tool responses and final assistant messages are echoed to the terminal to aid debugging.
 - If you add new scenarios, simply update the JSON file—no code changes are required.

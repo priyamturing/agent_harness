@@ -169,6 +169,8 @@ class TextualRunLogger:
         self._artifacts: Dict[str, list] = {
             "conversation": [],
             "verifier_history": [],
+            "log_stream": [],
+            "status_stream": [],
         }
 
     def _enqueue_render(self) -> None:
@@ -176,6 +178,7 @@ class TextualRunLogger:
         if not text.endswith("\n"):
             text = f"{text}\n"
         self._queue.put_nowait(text)
+        self._artifacts["log_stream"].append(text)
 
     def print(self, *args, **kwargs) -> None:  # noqa: ANN001
         self._capture_console.print(*args, **kwargs)
@@ -213,6 +216,7 @@ class TextualRunLogger:
         snapshot_copy = [dict(item) for item in snapshot]
         self._artifacts["verifier_history"].append(snapshot_copy)
         self._queue.put_nowait({"type": "status", "data": payload})
+        self._artifacts["status_stream"].append(payload)
 
         self._artifacts["conversation"].append(
             {
@@ -256,4 +260,6 @@ class TextualRunLogger:
         return {
             "conversation": list(self._artifacts["conversation"]),
             "verifier_history": list(self._artifacts["verifier_history"]),
+            "log_stream": list(self._artifacts["log_stream"]),
+            "status_stream": list(self._artifacts["status_stream"]),
         }
