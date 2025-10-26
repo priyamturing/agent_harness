@@ -8,9 +8,9 @@ This project provides a small LangChain-based CLI that drives a locally running 
 - Runs each benchmark scenario without any interactive input from the user
 - Supports the latest model identifiers for OpenAI, Anthropic, and xAI:
   - OpenAI: `gpt-5-high` (mapped to `gpt-5` with reasoning effort set to `high`)
-  - Anthropic: `claude-4.5-sonnet-reasoning`
+  - Anthropic: `claude-sonnet-4-5` (extended thinking enabled automatically)
   - xAI: `grok-4`
-- Launches multiple models in a single CLI invocation; pass `--model` more than once to fan out runs
+- Launches multiple models (even across providers) in a single CLI invocation; pass `--model` more than once and the CLI auto-selects the correct provider for each model
 - Binds all MCP tools to the selected LLM so it can call them while solving the scenario
 - Streams any reasoning traces emitted by the model for easier debugging
 - Automatically provisions a unique MCP workspace each run by sending an `x-database-id` header
@@ -50,15 +50,13 @@ export XAI_API_KEY=...
 ```bash
 python -m jira_mcp_benchmark \
   --harness-file old_sample_new_system_1_benchmark.json \
-  --provider openai \
   --env-file .env \
   --runs 3
 ```
 
 Additional useful options:
 
-- `--model`: override the default model identifier for the chosen provider
-  (repeat the flag to evaluate multiple models in the same session)
+- `--model`: request a specific model; repeat to run multiple models (optionally prefix with `<provider>:` to disambiguate, e.g. `--model anthropic:claude-4.5-sonnet-reasoning`)
 - `--temperature`: adjust sampling temperature (default `0.1`)
 - `--max-output-tokens`: limit the maximum number of generated tokens
 - `--harness-file`: select any benchmark JSON file without changing the default

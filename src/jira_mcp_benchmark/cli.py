@@ -17,7 +17,7 @@ from rich.table import Table
 from .agent import execute_scenario, extract_ai_message_content
 from .mcp_loader import MCPConfig, load_tools_from_mcp
 from .prompts import load_scenarios
-from .providers import PROVIDERS, create_chat_model
+from .providers import PROVIDERS, create_chat_model, resolve_provider_for_model
 from .run_logging import ConsoleRunLogger, RunLogger, TextualRunLogger
 from .textual_ui import MultiRunApp
 from .verifier import evaluate_verifiers
@@ -160,6 +160,7 @@ async def _execute_run(
         "run": run_label,
         "database_id": run_database_id,
         "summary": run_summary,
+        "provider": provider,
         "model": actual_model,
         "artifact_path": str(artifact_file),
     }
@@ -169,7 +170,6 @@ async def _run_plain(
     *,
     run_configs: list[dict[str, Optional[str]]],
     scenarios,
-    provider: str,
     temperature: float,
     max_output_tokens: Optional[int],
     artifact_dir: Path,
@@ -185,7 +185,7 @@ async def _run_plain(
             run_label=config["label"],
             logger_factory=logger_factory,
             scenarios=scenarios,
-            provider=provider,
+            provider=config["provider"],
             model=config["model"],
             temperature=temperature,
             max_output_tokens=max_output_tokens,
@@ -202,7 +202,6 @@ async def _run_textual(
     *,
     run_configs: list[dict[str, Optional[str]]],
     scenarios,
-    provider: str,
     temperature: float,
     max_output_tokens: Optional[int],
     artifact_dir: Path,
@@ -223,7 +222,7 @@ async def _run_textual(
                     run_label=config["label"],
                     logger_factory=logger_factory,
                     scenarios=scenarios,
-                    provider=provider,
+                    provider=config["provider"],
                     model=config["model"],
                     temperature=temperature,
                     max_output_tokens=max_output_tokens,
@@ -250,20 +249,32 @@ def _prepare_session_dir(base_name: str) -> Path:
 
 
 def _build_run_configs(
-    provider: str, models: list[Optional[str]], runs: int
+    model_entries: list[tuple[str, Optional[str]]], runs: int
 ) -> list[dict[str, Optional[str]]]:
     configs: list[dict[str, Optional[str]]] = []
-    for model_name in models:
-        alias = (model_name or PROVIDERS[provider].default_model).replace("/", "_")
+    multiple_models = len(model_entries) > 1
+    for provider_name, model_name in model_entries:
+        resolved_model = model_name or PROVIDERS[provider_name].default_model
+        alias_base = resolved_model.replace("/", "_")
+        if multiple_models:
+            alias_base = f"{provider_name}-{alias_base}"
         for idx in range(1, runs + 1):
-            label = f"{alias}-{idx}" if len(models) > 1 or runs > 1 else alias
-            configs.append({"label": label, "model": model_name})
+            label = alias_base if runs == 1 else f"{alias_base}-{idx}"
+            configs.append(
+                {
+                    "label": label,
+                    "provider": provider_name,
+                    "model": model_name,
+                }
+            )
     return configs
 
 
 def _render_summary(results: list[dict]) -> None:
     summary_table = Table(title="Run summary")
     summary_table.add_column("Run", justify="right")
+    summary_table.add_column("Provider")
+    summary_table.add_column("Model")
     summary_table.add_column("Database ID")
     summary_table.add_column("Scenarios")
     summary_table.add_column("Verifiers")
@@ -277,6 +288,8 @@ def _render_summary(results: list[dict]) -> None:
         )
         summary_table.add_row(
             result["run"],
+            result.get("provider", "-"),
+            result.get("model", "-"),
             result["database_id"],
             str(total_scenarios),
             f"{passed}/{total_verifiers}" if total_verifiers else "0",
@@ -300,15 +313,10 @@ def run(  # noqa: D417 - typer handles CLI docs
         readable=True,
         help="Optional harness JSON file. Overrides --prompt-file when provided.",
     ),
-    provider: str = typer.Option(
-        "openai",
-        case_sensitive=False,
-        help="LLM provider to use (openai, anthropic, xai).",
-    ),
     model: List[str] = typer.Option(  # type: ignore[assignment]
         None,
         "--model",
-        help="Override the default model for the selected provider. Supply multiple times to compare models.",
+        help="Run a specific model (provider inferred automatically). Repeat to compare models; optionally prefix with '<provider>:' to force a provider.",
         show_default=False,
     ),
     temperature: float = typer.Option(
@@ -340,13 +348,6 @@ def run(  # noqa: D417 - typer handles CLI docs
 ) -> None:
     _load_environment(env_file)
 
-    provider_key = provider.lower()
-    if provider_key not in PROVIDERS:
-        raise typer.BadParameter(
-            f"Unknown provider '{provider}'. "
-            f"Expected one of: {', '.join(sorted(PROVIDERS))}"
-        )
-
     prompt_source = harness_file or prompt_file
 
     console.print(
@@ -358,9 +359,25 @@ def run(  # noqa: D417 - typer handles CLI docs
     scenarios = load_scenarios(prompt_source)
     if not scenarios:
         raise typer.BadParameter(f"No scenarios found in {prompt_source}")
+    raw_models = list(model) if model else []
+    model_entries: list[tuple[str, Optional[str]]] = []
+    if not raw_models:
+        model_entries.append((resolve_provider_for_model(None), None))
+    else:
+        for raw_model in raw_models:
+            provider_hint: Optional[str] = None
+            model_name: Optional[str] = raw_model
+            if raw_model and ":" in raw_model:
+                hint, value = raw_model.split(":", 1)
+                provider_hint = hint.strip() or None
+                model_name = value.strip() or None
+            try:
+                provider_key = resolve_provider_for_model(model_name, provider_hint=provider_hint)
+            except ValueError as exc:
+                raise typer.BadParameter(str(exc)) from exc
+            model_entries.append((provider_key, model_name))
 
-    model_list: list[Optional[str]] = list(model) if model else [None]
-    run_configs = _build_run_configs(provider_key, model_list, runs)
+    run_configs = _build_run_configs(model_entries, runs)
 
     ui_mode = ui.lower()
     valid_ui = {"auto", "plain", "textual"}
@@ -378,7 +395,6 @@ def run(  # noqa: D417 - typer handles CLI docs
         _run_textual(
             run_configs=run_configs,
             scenarios=scenarios,
-            provider=provider_key,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
             artifact_dir=session_dir,
@@ -387,7 +403,6 @@ def run(  # noqa: D417 - typer handles CLI docs
         else _run_plain(
             run_configs=run_configs,
             scenarios=scenarios,
-            provider=provider_key,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
             artifact_dir=session_dir,
