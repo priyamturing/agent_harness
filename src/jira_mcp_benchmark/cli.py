@@ -6,6 +6,7 @@ import asyncio
 import json
 import sys
 from collections import Counter
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -41,6 +42,23 @@ DEFAULT_SQL_RUNNER_URL = f"{_mcp_base}/api/sql-runner"
 SESSION_MANIFEST_FILENAME = "session.json"
 VIEW_SELECT_SENTINEL = "__SELECT__"
 RESULTS_ROOT = Path("results")
+
+
+def _prepare_artifacts_for_export(raw_artifacts: dict) -> dict:
+    """Strip render-only fields from artifacts before exporting them."""
+
+    artifacts = deepcopy(raw_artifacts)
+    artifacts.pop("verifier_history", None)
+    artifacts.pop("status_stream", None)
+    conversation = artifacts.get("conversation")
+    if isinstance(conversation, list):
+        artifacts["conversation"] = [
+            entry
+            for entry in conversation
+            if not (isinstance(entry, dict) and entry.get("type") == "verifier_status")
+        ]
+    return artifacts
+
 
 # Ensure bare "--view" is treated as interactive selection by injecting a sentinel value
 if "--view" in sys.argv:
@@ -147,7 +165,7 @@ async def _execute_run(
     finally:
         await verifier_client.aclose()
 
-    artifacts = logger.get_artifacts()
+    artifacts = _prepare_artifacts_for_export(logger.get_artifacts())
     artifacts["run_label"] = run_label
     artifacts["database_id"] = run_database_id
     artifacts["provider"] = provider
