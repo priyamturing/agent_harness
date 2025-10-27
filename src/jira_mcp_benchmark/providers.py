@@ -97,13 +97,22 @@ def _build_xai(
     return ChatXAI(**kwargs)
 
 
+_OPENAI_REASONING_MODELS: Final[Tuple[str, ...]] = (
+    "gpt-5",
+    "gpt-5-mini",
+    "gpt-5-nano",
+    "gpt-5-pro",
+    "o4-mini",
+)
+
+
 PROVIDERS: Final[Dict[str, ProviderConfig]] = {
     "openai": ProviderConfig(
         name="openai",
         default_model="gpt-5-high",
         api_key_env="OPENAI_API_KEY",
         factory=_build_openai,
-        aliases=("gpt-5", "o4-mini", "gpt-5-high"),
+        aliases=("gpt-5", "o4-mini", "gpt-5-high", "gpt-4o", "gpt4o"),
     ),
     "anthropic": ProviderConfig(
         name="anthropic",
@@ -160,12 +169,21 @@ def create_chat_model(
 
     if config.name == "openai":
         normalized_model = model_name.lower()
+        reasoning_capable = normalized_model in _OPENAI_REASONING_MODELS
+
         if normalized_model == "gpt-5-high":
             model_name = "gpt-5"
             extra_kwargs["reasoning_effort"] = "high"
-        include = set(extra_kwargs.get("include") or [])
-        include.add("reasoning.encrypted_content")
-        extra_kwargs["include"] = sorted(include)
+            reasoning_capable = True
+        elif normalized_model not in _OPENAI_REASONING_MODELS:
+            # If the alias maps to a reasoning-capable model (e.g. "gpt-5"),
+            # check the resolved target once more.
+            reasoning_capable = model_name.lower() in _OPENAI_REASONING_MODELS
+
+        if reasoning_capable:
+            include = set(extra_kwargs.get("include") or [])
+            include.add("reasoning.encrypted_content")
+            extra_kwargs["include"] = sorted(include)
         extra_kwargs["output_version"] = "responses/v1"
         extra_kwargs["use_responses_api"] = True
     elif config.name == "xai":

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import textwrap
+import random
 from typing import Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import httpx
@@ -15,10 +16,20 @@ from langchain_core.tools import BaseTool
 from rich.console import Console
 from rich.table import Table
 
+try:
+    from anthropic import errors as anthropic_errors  # type: ignore[attr-defined]
+except Exception:  # pragma: no cover - optional dependency
+    anthropic_errors = None  # type: ignore[assignment]
+
 from .run_logging import ConsoleRunLogger, RunLogger
 from .verifier import evaluate_verifiers
 
 from .prompts import Scenario, scenario_summary
+
+_MAX_LLM_RETRIES = 5
+_BASE_RETRY_DELAY_SECONDS = 1.0
+_MAX_RETRY_DELAY_SECONDS = 30.0
+_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 def _serialize_tool_output(result: object) -> object:
@@ -142,6 +153,94 @@ async def _invoke_tool(tool: BaseTool, arguments: dict) -> object:
     return await loop.run_in_executor(None, tool.invoke, arguments)
 
 
+def _extract_status_code(exc: Exception) -> Optional[int]:
+    """Best effort pull of an HTTP status code from common exception shapes."""
+
+    for attr in ("status_code", "status", "code"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+    response = getattr(exc, "response", None)
+    if response is not None:
+        value = getattr(response, "status_code", None)
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def _should_retry_model_error(exc: Exception) -> bool:
+    """Return True when the model exception is likely transient."""
+
+    status_code = _extract_status_code(exc)
+    if status_code in _TRANSIENT_STATUS_CODES:
+        return True
+
+    if anthropic_errors:
+        if hasattr(anthropic_errors, "RateLimitError") and isinstance(
+            exc, getattr(anthropic_errors, "RateLimitError")
+        ):
+            return True
+        if hasattr(anthropic_errors, "InternalServerError") and isinstance(
+            exc, getattr(anthropic_errors, "InternalServerError")
+        ):
+            return True
+        if hasattr(anthropic_errors, "APIError") and isinstance(
+            exc, getattr(anthropic_errors, "APIError")
+        ):
+            if status_code in _TRANSIENT_STATUS_CODES:
+                return True
+
+    if isinstance(exc, httpx.RequestError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError) and status_code in _TRANSIENT_STATUS_CODES:
+        return True
+
+    message = str(exc).lower()
+    return any(
+        hint in message
+        for hint in (
+            "temporarily unavailable",
+            "overloaded",
+            "rate limit",
+            "please retry",
+        )
+    )
+
+
+def _compute_retry_delay(attempt: int) -> float:
+    """Calculate exponential backoff with decorrelated jitter."""
+
+    base = _BASE_RETRY_DELAY_SECONDS * (2 ** (attempt - 1))
+    jitter = random.uniform(0, _BASE_RETRY_DELAY_SECONDS)
+    return min(_MAX_RETRY_DELAY_SECONDS, base + jitter)
+
+
+async def _invoke_model_with_retry(
+    llm_with_tools: BaseChatModel, messages: List[BaseMessage], logger: RunLogger
+) -> AIMessage:
+    """Invoke the model with retries on transient failures."""
+
+    for attempt in range(1, _MAX_LLM_RETRIES + 1):
+        try:
+            return await llm_with_tools.ainvoke(messages)
+        except asyncio.CancelledError:  # pragma: no cover - cooperative cancellation
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if not _should_retry_model_error(exc) or attempt == _MAX_LLM_RETRIES:
+                raise
+            delay = _compute_retry_delay(attempt)
+            reason = str(exc).strip() or exc.__class__.__name__
+            logger.print(
+                "[yellow]Model call failed (attempt {attempt}/{total}): {reason} – "
+                "retrying in {delay:.2f}s.[/yellow]".format(
+                    attempt=attempt, total=_MAX_LLM_RETRIES, reason=reason, delay=delay
+                )
+            )
+            await asyncio.sleep(delay)
+
+    raise RuntimeError("Model invocation retries exhausted.")  # pragma: no cover - defensive
+
+
 async def _model_step(
     *,
     llm_with_tools: BaseChatModel,
@@ -154,7 +253,11 @@ async def _model_step(
     """Iteratively invoke the model while handling tool calls."""
 
     while True:
-        ai_message: AIMessage = await llm_with_tools.ainvoke(messages)
+        ai_message: AIMessage = await _invoke_model_with_retry(
+            llm_with_tools,
+            messages,
+            logger,
+        )
         primary_text, reasoning_chunks, _ = extract_ai_message_content(ai_message)
         if reasoning_chunks:
             label_base = "Reasoning" if len(reasoning_chunks) == 1 else "Reasoning {}"

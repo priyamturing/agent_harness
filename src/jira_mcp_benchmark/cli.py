@@ -130,6 +130,9 @@ async def _execute_run(
 
     run_summary = []
     verifier_client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0))
+    run_failed = False
+    failure_reason: Optional[str] = None
+    failed_scenario_id: Optional[str] = None
 
     try:
         for scenario in scenarios:
@@ -162,6 +165,27 @@ async def _execute_run(
             if final_results:
                 logger.update_verifier_status(final_results)
             run_summary.append((scenario.scenario_id, final_results))
+    except asyncio.CancelledError:  # pragma: no cover - cooperative cancellation
+        raise
+    except Exception as exc:  # noqa: BLE001
+        run_failed = True
+        failure_reason = str(exc).strip() or exc.__class__.__name__
+        failed_scenario_id = getattr(scenario, "scenario_id", None)
+        scenario_label = (
+            f" scenario {failed_scenario_id}" if failed_scenario_id is not None else ""
+        )
+        logger.print(
+            "[bold red]Run {label} failed while processing{scenario_label}: "
+            "{reason}[/bold red]".format(
+                label=run_label,
+                scenario_label=scenario_label,
+                reason=failure_reason,
+            )
+        )
+        logger.log_message(
+            "system",
+            f"Run {run_label} failed{scenario_label}: {failure_reason}",
+        )
     finally:
         await verifier_client.aclose()
 
@@ -170,6 +194,11 @@ async def _execute_run(
     artifacts["database_id"] = run_database_id
     artifacts["provider"] = provider
     artifacts["model"] = actual_model
+    artifacts["status"] = "failed" if run_failed else "completed"
+    if run_failed and failure_reason:
+        artifacts["failure_reason"] = failure_reason
+    if run_failed and failed_scenario_id is not None:
+        artifacts["failed_scenario_id"] = failed_scenario_id
     artifacts["scenarios"] = []
     for scenario_id, final_results in run_summary:
         artifacts["scenarios"].append(
@@ -199,6 +228,9 @@ async def _execute_run(
         "provider": provider,
         "model": actual_model,
         "artifact_path": str(artifact_file),
+        "status": "failed" if run_failed else "completed",
+        "failure_reason": failure_reason,
+        "failed_scenario_id": failed_scenario_id,
     }
 
 
@@ -312,6 +344,7 @@ def _build_run_configs(
 def _render_summary(results: list[dict]) -> None:
     summary_table = Table(title="Run summary")
     summary_table.add_column("Run", justify="right")
+    summary_table.add_column("Status")
     summary_table.add_column("Provider")
     summary_table.add_column("Model")
     summary_table.add_column("Database ID")
@@ -325,8 +358,16 @@ def _render_summary(results: list[dict]) -> None:
         passed = sum(
             1 for _, verifier_results in result["summary"] for vr in verifier_results if vr.success
         )
+        status_value = (result.get("status") or "completed").lower()
+        if status_value == "failed":
+            status_text = "[red]FAILED[/red]"
+        elif status_value in {"completed", "success"}:
+            status_text = "[green]OK[/green]"
+        else:
+            status_text = status_value.upper()
         summary_table.add_row(
             result["run"],
+            status_text,
             result.get("provider", "-"),
             result.get("model", "-"),
             result["database_id"],
@@ -398,6 +439,9 @@ def _write_session_manifest(
         runs_payload.append(
             {
                 "label": result.get("run"),
+                "status": result.get("status", "completed"),
+                "failure_reason": result.get("failure_reason"),
+                "failed_scenario_id": result.get("failed_scenario_id"),
                 "provider": result.get("provider"),
                 "model": result.get("model"),
                 "artifact_path": result.get("artifact_path"),
