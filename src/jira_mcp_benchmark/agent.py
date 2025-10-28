@@ -29,6 +29,7 @@ from .prompts import Scenario, scenario_summary
 _MAX_LLM_RETRIES = 5
 _BASE_RETRY_DELAY_SECONDS = 1.0
 _MAX_RETRY_DELAY_SECONDS = 30.0
+_STEP_TIMEOUT_SECONDS = 600.0  # 10 minutes per model step before retrying
 _TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
@@ -222,9 +223,29 @@ async def _invoke_model_with_retry(
 
     for attempt in range(1, _MAX_LLM_RETRIES + 1):
         try:
-            return await llm_with_tools.ainvoke(messages)
+            return await asyncio.wait_for(
+                llm_with_tools.ainvoke(messages),
+                timeout=_STEP_TIMEOUT_SECONDS,
+            )
         except asyncio.CancelledError:  # pragma: no cover - cooperative cancellation
             raise
+        except asyncio.TimeoutError:
+            timeout_minutes = int(_STEP_TIMEOUT_SECONDS // 60) or 1
+            if attempt == _MAX_LLM_RETRIES:
+                raise TimeoutError(
+                    f"Model call timed out after {timeout_minutes} minute(s)."
+                ) from None
+            delay = _compute_retry_delay(attempt)
+            logger.print(
+                "[yellow]Model call timed out after {timeout} minute(s) "
+                "(attempt {attempt}/{total}); retrying in {delay:.2f}s.[/yellow]".format(
+                    timeout=timeout_minutes,
+                    attempt=attempt,
+                    total=_MAX_LLM_RETRIES,
+                    delay=delay,
+                )
+            )
+            await asyncio.sleep(delay)
         except Exception as exc:  # noqa: BLE001
             if not _should_retry_model_error(exc) or attempt == _MAX_LLM_RETRIES:
                 raise

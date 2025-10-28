@@ -7,14 +7,14 @@ This project provides a small LangChain-based CLI that drives a locally running 
 - Connects to a local MCP server (defaults to `http://localhost:8015/mcp`) using `langchain-mcp-adapters`
 - Runs each benchmark scenario without any interactive input from the user
 - Supports the latest model identifiers for OpenAI, Anthropic, and xAI:
-  - OpenAI: `gpt-5-high` (mapped to `gpt-5` with reasoning effort set to `high`)
+  - OpenAI: `gpt-5-high` (mapped to `gpt-5` with reasoning effort set to `high`) and `gpt-4o` (runs without reasoning traces)
   - Anthropic: `claude-sonnet-4-5` (extended thinking enabled automatically)
   - xAI: `grok-4`
 - Launches multiple models (even across providers) in a single CLI invocation; pass `--model` more than once and the CLI auto-selects the correct provider for each model
 - Binds all MCP tools to the selected LLM so it can call them while solving the scenario
 - Streams any reasoning traces emitted by the model for easier debugging
 - Automatically provisions a unique MCP workspace each run by sending an `x-database-id` header
-- Requests OpenAI reasoning summaries and encrypted reasoning tokens so follow-up turns can reference prior cogitation if needed
+- Requests OpenAI reasoning summaries and encrypted reasoning tokens for reasoning-capable models so follow-up turns can reference prior cogitation if needed
 - Replays the harness verifiers after every MCP tool call (and again at the end of each scenario) so progress is visible in real time
 - Optional Textual-based UI so every parallel run can stream into its own terminal tab
 - Writes per-run JSON artifacts (conversation history, tool calls, verifier snapshots) inside `results/`, under a session folder named after the harness file

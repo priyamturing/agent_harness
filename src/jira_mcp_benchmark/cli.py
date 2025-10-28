@@ -9,7 +9,7 @@ from collections import Counter
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, NamedTuple, Optional, Sequence
 from uuid import uuid4
 
 import httpx
@@ -20,7 +20,7 @@ from rich.table import Table
 
 from .agent import execute_scenario, extract_ai_message_content
 from .mcp_loader import MCPConfig, load_tools_from_mcp
-from .prompts import load_scenarios
+from .prompts import Scenario, load_scenarios
 from .providers import PROVIDERS, create_chat_model, resolve_provider_for_model
 from .run_logging import ConsoleRunLogger, RunLogger, TextualRunLogger
 from .session_picker import SessionDisplay, SessionPickerApp
@@ -42,6 +42,26 @@ DEFAULT_SQL_RUNNER_URL = f"{_mcp_base}/api/sql-runner"
 SESSION_MANIFEST_FILENAME = "session.json"
 VIEW_SELECT_SENTINEL = "__SELECT__"
 RESULTS_ROOT = Path("results")
+
+
+def _sanitize_label(raw: str) -> str:
+    sanitized = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in raw)
+    sanitized = sanitized.strip("_") or "run"
+    return sanitized
+
+
+class ScenarioBatch(NamedTuple):
+    alias: str
+    source: Path
+    scenarios: Sequence[Scenario]
+
+
+def _compose_run_label(*, config_label: str, batch_alias: str, multiple_batches: bool) -> str:
+    if multiple_batches:
+        base = f"{batch_alias}-{config_label}" if config_label else batch_alias
+    else:
+        base = config_label or batch_alias
+    return _sanitize_label(base)
 
 
 def _prepare_artifacts_for_export(raw_artifacts: dict) -> dict:
@@ -84,12 +104,14 @@ async def _execute_run(
     *,
     run_label: str,
     logger_factory: Callable[[str, str], RunLogger],
-    scenarios,
+    scenarios: Sequence[Scenario],
     provider: str,
     model: Optional[str],
     temperature: float,
     max_output_tokens: Optional[int],
     artifact_dir: Path,
+    prompt_path: Path,
+    prompt_alias: str,
 ) -> dict:
     run_database_id = str(uuid4())
     logger = logger_factory(run_label, run_database_id)
@@ -100,6 +122,13 @@ async def _execute_run(
             f"using transport [bold]{DEFAULT_MCP_TRANSPORT}[/bold]\n"
             f"[dim]x-database-id={run_database_id}[/dim]",
             title=f"Run {run_label} setup",
+        )
+    )
+
+    logger.print(
+        Panel(
+            f"Executing scenarios from [bold]{prompt_path.name}[/bold]\n[dim]{prompt_path}[/dim]",
+            title=f"Run {run_label} prompts",
         )
     )
 
@@ -194,6 +223,8 @@ async def _execute_run(
     artifacts["database_id"] = run_database_id
     artifacts["provider"] = provider
     artifacts["model"] = actual_model
+    artifacts["prompt_file"] = str(prompt_path)
+    artifacts["prompt_alias"] = prompt_alias
     artifacts["status"] = "failed" if run_failed else "completed"
     if run_failed and failure_reason:
         artifacts["failure_reason"] = failure_reason
@@ -227,6 +258,8 @@ async def _execute_run(
         "summary": run_summary,
         "provider": provider,
         "model": actual_model,
+        "prompt_file": str(prompt_path),
+        "prompt_alias": prompt_alias,
         "artifact_path": str(artifact_file),
         "status": "failed" if run_failed else "completed",
         "failure_reason": failure_reason,
@@ -237,12 +270,32 @@ async def _execute_run(
 async def _run_plain(
     *,
     run_configs: list[dict[str, Optional[str]]],
-    scenarios,
+    scenario_batches: Sequence[ScenarioBatch],
     temperature: float,
     max_output_tokens: Optional[int],
     artifact_dir: Path,
 ) -> List[dict]:
-    multiple_runs = len(run_configs) > 1
+    run_items: List[dict] = []
+    multiple_batches = len(scenario_batches) > 1
+    for batch in scenario_batches:
+        for config in run_configs:
+            config_label = config.get("label") or "run"
+            run_label = _compose_run_label(
+                config_label=config_label,
+                batch_alias=batch.alias,
+                multiple_batches=multiple_batches,
+            )
+            run_items.append(
+                {
+                    "label": run_label,
+                    "config": config,
+                    "scenarios": batch.scenarios,
+                    "prompt_path": batch.source,
+                    "prompt_alias": batch.alias,
+                }
+            )
+
+    multiple_runs = len(run_items) > 1
 
     def logger_factory(label: str, _db_id: str) -> RunLogger:
         prefix = f"Run {label}" if multiple_runs else None
@@ -250,16 +303,18 @@ async def _run_plain(
 
     tasks = [
         _execute_run(
-            run_label=config["label"],
+            run_label=item["label"],
             logger_factory=logger_factory,
-            scenarios=scenarios,
-            provider=config["provider"],
-            model=config["model"],
+            scenarios=item["scenarios"],
+            provider=item["config"]["provider"],
+            model=item["config"]["model"],
             temperature=temperature,
             max_output_tokens=max_output_tokens,
             artifact_dir=artifact_dir,
+            prompt_path=item["prompt_path"],
+            prompt_alias=item["prompt_alias"],
         )
-        for config in run_configs
+        for item in run_items
     ]
 
     results = [await tasks[0]] if len(tasks) == 1 else await asyncio.gather(*tasks)
@@ -270,12 +325,32 @@ async def _run_plain(
 async def _run_textual(
     *,
     run_configs: list[dict[str, Optional[str]]],
-    scenarios,
+    scenario_batches: Sequence[ScenarioBatch],
     temperature: float,
     max_output_tokens: Optional[int],
     artifact_dir: Path,
 ) -> List[dict]:
-    run_labels = [config["label"] for config in run_configs]
+    run_items: List[dict] = []
+    multiple_batches = len(scenario_batches) > 1
+    for batch in scenario_batches:
+        for config in run_configs:
+            config_label = config.get("label") or "run"
+            run_label = _compose_run_label(
+                config_label=config_label,
+                batch_alias=batch.alias,
+                multiple_batches=multiple_batches,
+            )
+            run_items.append(
+                {
+                    "label": run_label,
+                    "config": config,
+                    "scenarios": batch.scenarios,
+                    "prompt_path": batch.source,
+                    "prompt_alias": batch.alias,
+                }
+            )
+
+    run_labels = [item["label"] for item in run_items]
     queues: Dict[str, asyncio.Queue[object]] = {label: asyncio.Queue() for label in run_labels}
 
     def logger_factory(label: str, _db_id: str) -> RunLogger:
@@ -288,16 +363,18 @@ async def _run_textual(
         results = await asyncio.gather(
             *[
                 _execute_run(
-                    run_label=config["label"],
+                    run_label=item["label"],
                     logger_factory=logger_factory,
-                    scenarios=scenarios,
-                    provider=config["provider"],
-                    model=config["model"],
+                    scenarios=item["scenarios"],
+                    provider=item["config"]["provider"],
+                    model=item["config"]["model"],
                     temperature=temperature,
                     max_output_tokens=max_output_tokens,
                     artifact_dir=artifact_dir,
+                    prompt_path=item["prompt_path"],
+                    prompt_alias=item["prompt_alias"],
                 )
-                for config in run_configs
+                for item in run_items
             ]
         )
     finally:
@@ -326,11 +403,11 @@ def _build_run_configs(
     multiple_models = len(model_entries) > 1
     for provider_name, model_name in model_entries:
         resolved_model = model_name or PROVIDERS[provider_name].default_model
-        alias_base = resolved_model.replace("/", "_")
+        alias_base = _sanitize_label(resolved_model.replace("/", "_"))
         if multiple_models:
-            alias_base = f"{provider_name}-{alias_base}"
+            alias_base = _sanitize_label(f"{provider_name}-{alias_base}")
         for idx in range(1, runs + 1):
-            label = alias_base if runs == 1 else f"{alias_base}-{idx}"
+            label = alias_base if runs == 1 else _sanitize_label(f"{alias_base}-{idx}")
             configs.append(
                 {
                     "label": label,
@@ -345,6 +422,7 @@ def _render_summary(results: list[dict]) -> None:
     summary_table = Table(title="Run summary")
     summary_table.add_column("Run", justify="right")
     summary_table.add_column("Status")
+    summary_table.add_column("Prompt")
     summary_table.add_column("Provider")
     summary_table.add_column("Model")
     summary_table.add_column("Database ID")
@@ -365,9 +443,14 @@ def _render_summary(results: list[dict]) -> None:
             status_text = "[green]OK[/green]"
         else:
             status_text = status_value.upper()
+        prompt_value = result.get("prompt_alias")
+        if not prompt_value:
+            prompt_path_raw = result.get("prompt_file")
+            prompt_value = Path(prompt_path_raw).stem if prompt_path_raw else "-"
         summary_table.add_row(
             result["run"],
             status_text,
+            prompt_value,
             result.get("provider", "-"),
             result.get("model", "-"),
             result["database_id"],
@@ -415,6 +498,7 @@ def _write_session_manifest(
     *,
     session_dir: Path,
     prompt_source: Path,
+    prompt_files: Sequence[Path] | None,
     ui_mode: str,
     results: List[dict],
 ) -> None:
@@ -446,24 +530,29 @@ def _write_session_manifest(
                 "model": result.get("model"),
                 "artifact_path": result.get("artifact_path"),
                 "database_id": result.get("database_id"),
+                "prompt_file": result.get("prompt_file"),
+                "prompt_alias": result.get("prompt_alias"),
                 "scenarios": scenario_entries,
             }
         )
 
     created_display = created_at.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z").strip()
+    prompt_source_name = prompt_source.stem if prompt_source.is_file() else prompt_source.name
+    prompt_file_entries = prompt_files or [prompt_source]
     manifest = {
         "created_at": created_at.isoformat(),
         "created_at_display": created_display,
         "harness_file": str(prompt_source),
-        "harness_name": prompt_source.stem,
+        "harness_name": prompt_source_name,
         "ui_mode": ui_mode,
         "run_count": len(results),
         "model_summary": model_summary,
         "model_summary_text": _format_model_summary(model_summary),
         "runs": runs_payload,
+        "prompt_files": [str(item) for item in prompt_file_entries],
     }
     manifest["display_name"] = (
-        f"{created_display} • {prompt_source.stem} • {manifest['model_summary_text']}"
+        f"{created_display} • {prompt_source_name} • {manifest['model_summary_text']}"
     )
 
     manifest_path = session_dir / "session.json"
@@ -890,12 +979,12 @@ def run(  # noqa: D417 - typer handles CLI docs
     prompt_file: Optional[Path] = typer.Option(
         None,
         "--prompt-file",
-        help="Benchmark JSON file containing scenarios.",
+        help="Benchmark JSON file or directory containing scenario files.",
         show_default=False,
     ),
     harness_file: Optional[Path] = typer.Option(
         None,
-        help="Optional harness JSON file. Overrides --prompt-file when provided.",
+        help="Optional harness JSON file or directory. Overrides --prompt-file when provided.",
         show_default=False,
     ),
     view: Optional[str] = typer.Option(
@@ -983,19 +1072,63 @@ def run(  # noqa: D417 - typer handles CLI docs
     prompt_source = harness_file or prompt_file
     param_name = "--harness-file" if harness_file else "--prompt-file"
     if not prompt_source.exists():
-        raise typer.BadParameter(f"{param_name}: file '{prompt_source}' does not exist.")
-    if not prompt_source.is_file():
-        raise typer.BadParameter(f"{param_name}: '{prompt_source}' is not a file.")
+        raise typer.BadParameter(f"{param_name}: path '{prompt_source}' does not exist.")
 
-    console.print(
-        Panel(
-            f"Loading scenarios from [bold]{prompt_source}[/bold]",
-            title="Harness",
+    if prompt_source.is_file():
+        console.print(
+            Panel(
+                f"Loading scenarios from [bold]{prompt_source}[/bold]",
+                title="Harness",
+            )
         )
-    )
-    scenarios = load_scenarios(prompt_source)
-    if not scenarios:
-        raise typer.BadParameter(f"No scenarios found in {prompt_source}")
+        prompt_files = [prompt_source]
+    elif prompt_source.is_dir():
+        prompt_files = sorted(
+            [
+                entry
+                for entry in prompt_source.iterdir()
+                if entry.is_file() and entry.suffix.lower() == ".json"
+            ],
+            key=lambda path: path.name.lower(),
+        )
+        if not prompt_files:
+            raise typer.BadParameter(
+                f"{param_name}: directory '{prompt_source}' does not contain any JSON files."
+            )
+        console.print(
+            Panel(
+                f"Loading scenarios from [bold]{prompt_source}[/bold] "
+                f"({len(prompt_files)} JSON files)",
+                title="Harness",
+            )
+        )
+    else:
+        raise typer.BadParameter(
+            f"{param_name}: '{prompt_source}' is neither a file nor a directory."
+        )
+
+    alias_counts: Dict[str, int] = {}
+    scenario_batches: list[ScenarioBatch] = []
+    for prompt_path in prompt_files:
+        scenarios = load_scenarios(prompt_path)
+        if not scenarios:
+            raise typer.BadParameter(f"No scenarios found in {prompt_path}")
+        base_alias = _sanitize_label(prompt_path.stem)
+        occurrence = alias_counts.get(base_alias, 0)
+        alias_counts[base_alias] = occurrence + 1
+        alias = base_alias if occurrence == 0 else _sanitize_label(
+            f"{base_alias}-{occurrence + 1}"
+        )
+        scenario_batches.append(
+            ScenarioBatch(alias=alias, source=prompt_path, scenarios=scenarios)
+        )
+
+    if len(scenario_batches) > 1:
+        for batch in scenario_batches:
+            console.print(
+                f"[dim]  • {batch.source} ({len(batch.scenarios)} scenarios)[/dim]"
+            )
+
     raw_models = list(model) if model else []
     model_entries: list[tuple[str, Optional[str]]] = []
     if not raw_models:
@@ -1018,16 +1151,18 @@ def run(  # noqa: D417 - typer handles CLI docs
 
     ui_mode = ui_mode_raw
     if ui_mode == "auto":
-        ui_mode = "textual" if len(run_configs) > 1 else "plain"
+        total_runs = len(run_configs) * len(scenario_batches)
+        ui_mode = "textual" if total_runs > 1 else "plain"
 
-    session_dir = _prepare_session_dir(prompt_source.stem)
+    session_name_base = prompt_source.stem if prompt_source.is_file() else prompt_source.name
+    session_dir = _prepare_session_dir(session_name_base)
     console.print(Panel(f"Storing run artifacts in [bold]{session_dir}[/bold]"))
 
     if ui_mode == "textual":
         run_results = asyncio.run(
             _run_textual(
                 run_configs=run_configs,
-                scenarios=scenarios,
+                scenario_batches=scenario_batches,
                 temperature=temperature,
                 max_output_tokens=max_output_tokens,
                 artifact_dir=session_dir,
@@ -1037,7 +1172,7 @@ def run(  # noqa: D417 - typer handles CLI docs
         run_results = asyncio.run(
             _run_plain(
                 run_configs=run_configs,
-                scenarios=scenarios,
+                scenario_batches=scenario_batches,
                 temperature=temperature,
                 max_output_tokens=max_output_tokens,
                 artifact_dir=session_dir,
@@ -1047,6 +1182,7 @@ def run(  # noqa: D417 - typer handles CLI docs
     _write_session_manifest(
         session_dir=session_dir,
         prompt_source=prompt_source,
+        prompt_files=[batch.source for batch in scenario_batches],
         ui_mode=ui_mode,
         results=run_results,
     )
