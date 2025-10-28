@@ -8,3 +8,4 @@ dist/
 *.json
 *.db
 *.zip
+*.pytest_cache
