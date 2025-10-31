@@ -84,7 +84,11 @@ async def evaluate_verifiers(
 
     owns_client = client is None
     if client is None:
-        client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0))
+        client = httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, connect=10.0),
+            # Add retries and better connection handling
+            transport=httpx.AsyncHTTPTransport(retries=2),
+        )
 
     results: list[VerifierResult] = []
 
@@ -147,7 +151,9 @@ async def evaluate_verifiers(
                         error=None if success else "Comparison failed.",
                     )
                 )
-            except Exception as exc:  # noqa: BLE001
+            except httpx.ReadError as exc:
+                # Network read errors - connection dropped during response
+                error_msg = f"Network error (connection dropped): {exc.__class__.__name__}"
                 results.append(
                     VerifierResult(
                         verifier=verifier,
@@ -155,12 +161,55 @@ async def evaluate_verifiers(
                         actual_value=None,
                         expected_value=expected_value,
                         comparison_type=comparison_type,
-                        error=str(exc),
+                        error=error_msg,
+                    )
+                )
+            except httpx.HTTPStatusError as exc:
+                # HTTP error status codes
+                error_msg = f"HTTP {exc.response.status_code}: {exc.response.text[:100]}"
+                results.append(
+                    VerifierResult(
+                        verifier=verifier,
+                        success=False,
+                        actual_value=None,
+                        expected_value=expected_value,
+                        comparison_type=comparison_type,
+                        error=error_msg,
+                    )
+                )
+            except httpx.RequestError as exc:
+                # Connection errors, timeouts, etc.
+                error_msg = f"Request error: {exc.__class__.__name__}"
+                results.append(
+                    VerifierResult(
+                        verifier=verifier,
+                        success=False,
+                        actual_value=None,
+                        expected_value=expected_value,
+                        comparison_type=comparison_type,
+                        error=error_msg,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Catch-all for other errors
+                error_msg = str(exc) or exc.__class__.__name__
+                results.append(
+                    VerifierResult(
+                        verifier=verifier,
+                        success=False,
+                        actual_value=None,
+                        expected_value=expected_value,
+                        comparison_type=comparison_type,
+                        error=error_msg,
                     )
                 )
     finally:
         if owns_client:
-            await client.aclose()
+            try:
+                await client.aclose()
+            except Exception:  # noqa: BLE001
+                # Silently ignore errors during cleanup
+                pass
 
     return results
 

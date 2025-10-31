@@ -29,6 +29,13 @@ except ImportError as exc:  # pragma: no cover - handled by dependency managemen
         "langchain-xai is required. Install with `pip install langchain-xai`."
     ) from exc
 
+try:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+except ImportError as exc:  # pragma: no cover - handled by dependency management
+    raise ImportError(
+        "langchain-google-genai is required. Install with `pip install langchain-google-genai`."
+    ) from exc
+
 
 ModelFactory = Callable[[str, float, Optional[int], Dict[str, Any]], BaseChatModel]
 
@@ -97,6 +104,94 @@ def _build_xai(
     return ChatXAI(**kwargs)
 
 
+def _build_google(
+    model: str, temperature: float, max_output_tokens: Optional[int], extra: Dict[str, Any]
+) -> BaseChatModel:
+    kwargs: Dict[str, Any] = {
+        "model": model,
+        "temperature": temperature,
+        "timeout": None,
+        "max_retries": 3,
+        "include_thoughts": True,
+        "thinking_budget": 24576,  # Max allowed by Gemini API
+    }
+    if max_output_tokens is not None:
+        kwargs["max_output_tokens"] = max_output_tokens
+    kwargs.update(extra)
+    return ChatGoogleGenerativeAI(**kwargs)
+
+
+def _build_openrouter(
+    model: str, temperature: float, max_output_tokens: Optional[int], extra: Dict[str, Any]
+) -> BaseChatModel:
+    """Build a ChatOpenAI client configured for OpenRouter."""
+
+    kwargs: Dict[str, Any] = {
+        "model": model,
+        "temperature": temperature,
+        "timeout": None,
+        "max_retries": 3,
+    }
+    if max_output_tokens is not None:
+        kwargs["max_tokens"] = max_output_tokens
+    kwargs.update(extra)
+
+    base_url = kwargs.get("base_url") or os.environ.get("OPENROUTER_BASE_URL")
+    kwargs["base_url"] = base_url or "https://openrouter.ai/api/v1"
+
+    api_key = kwargs.get("api_key") or os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        raise EnvironmentError(
+            "OPENROUTER_API_KEY is not set. Export the API key before running."
+        )
+    kwargs["api_key"] = api_key
+
+    # Merge optional headers recommended by OpenRouter (used for rankings/analytics).
+    default_headers = dict(kwargs.get("default_headers") or {})
+    referer = os.environ.get("OPENROUTER_HTTP_REFERER")
+    if referer and "HTTP-Referer" not in default_headers:
+        default_headers["HTTP-Referer"] = referer
+    title = os.environ.get("OPENROUTER_APP_TITLE")
+    if title and "X-Title" not in default_headers:
+        default_headers["X-Title"] = title
+    if default_headers:
+        kwargs["default_headers"] = default_headers
+
+    # Ensure we only route through providers that support our required capabilities.
+    extra_body = dict(kwargs.get("extra_body") or {})
+    provider_preferences = dict(extra_body.get("provider") or {})
+
+    allowed_providers_env = os.environ.get("OPENROUTER_PROVIDER_ONLY")
+    if allowed_providers_env:
+        allowed_providers = [
+            slug.strip() for slug in allowed_providers_env.split(",") if slug.strip()
+        ]
+    else:
+        allowed_providers = ["fireworks", "groq"]
+    if allowed_providers and "only" not in provider_preferences:
+        provider_preferences["only"] = allowed_providers
+
+    allow_fallbacks_env = os.environ.get("OPENROUTER_ALLOW_FALLBACKS")
+    if (
+        allow_fallbacks_env is not None
+        and "allow_fallbacks" not in provider_preferences
+    ):
+        allow_fallbacks = allow_fallbacks_env.strip().lower() in {"1", "true", "yes"}
+        provider_preferences["allow_fallbacks"] = allow_fallbacks
+    if "allow_fallbacks" not in provider_preferences:
+        provider_preferences["allow_fallbacks"] = True
+
+    if "require_parameters" not in provider_preferences:
+        provider_preferences["require_parameters"] = True
+
+    if provider_preferences:
+        extra_body["provider"] = provider_preferences
+    if extra_body:
+        kwargs["extra_body"] = extra_body
+
+    return ChatOpenAI(**kwargs)
+
+
 _OPENAI_REASONING_MODELS: Final[Tuple[str, ...]] = (
     "gpt-5",
     "gpt-5-mini",
@@ -133,6 +228,33 @@ PROVIDERS: Final[Dict[str, ProviderConfig]] = {
         api_key_env="XAI_API_KEY",
         factory=_build_xai,
         aliases=("grok-4", "grok4", "grok-3-mini", "grok-2"),
+    ),
+    "google": ProviderConfig(
+        name="google",
+        default_model="gemini-2.5-pro",
+        api_key_env="GOOGLE_API_KEY",
+        factory=_build_google,
+        aliases=(
+            "gemini-2.5-pro",
+            "models/gemini-2.5-pro",
+            "gemini-2.5-pro-exp",
+            "models/gemini-2.5-pro-exp",
+            "gemini-2.5-flash",
+            "models/gemini-2.5-flash",
+            "gemini-2.5-flash-exp",
+            "models/gemini-2.5-flash-exp",
+        ),
+    ),
+    "openrouter": ProviderConfig(
+        name="openrouter",
+        default_model="meta-llama/llama-4-maverick",
+        api_key_env="OPENROUTER_API_KEY",
+        factory=_build_openrouter,
+        aliases=(
+            "llama-4-maverick",
+            "meta-llama/llama-4-maverick:nitro",
+            "meta-llama/llama-4-maverick:floor",
+        ),
     ),
 }
 
@@ -209,6 +331,19 @@ def create_chat_model(
             extra_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 42000}
             if temperature != 1.0:
                 temperature = 1.0
+    elif config.name == "google":
+        include_thoughts = extra_kwargs.get("include_thoughts", True)
+        extra_kwargs["include_thoughts"] = include_thoughts
+        extra_kwargs.setdefault("thinking_budget", 24576)  # Max allowed by Gemini API
+    elif config.name == "openrouter":
+        use_responses_env = os.environ.get("OPENROUTER_USE_RESPONSES_API")
+        if use_responses_env is not None:
+            use_responses = use_responses_env.strip().lower() in {"1", "true", "yes"}
+        else:
+            use_responses = False
+        if use_responses:
+            extra_kwargs.setdefault("use_responses_api", True)
+            extra_kwargs.setdefault("output_version", "responses/v1")
 
     return config.factory(model_name, temperature, max_output_tokens, extra_kwargs)
 
@@ -242,6 +377,10 @@ def resolve_provider_for_model(
         return "anthropic"
     if normalized.startswith("grok"):
         return "xai"
+    if normalized.startswith("gemini") or normalized.startswith("models/gemini"):
+        return "google"
+    if normalized.startswith("meta-llama/") or normalized.startswith("llama-"):
+        return "openrouter"
 
     raise ValueError(
         f"Unable to infer provider for model '{model}'. "

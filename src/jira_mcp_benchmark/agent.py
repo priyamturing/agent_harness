@@ -26,10 +26,11 @@ from .verifier import evaluate_verifiers
 
 from .prompts import Scenario, scenario_summary
 
-_MAX_LLM_RETRIES = 5
+_MAX_LLM_RETRIES = 3  # Max retries after initial attempt (4 total attempts)
 _BASE_RETRY_DELAY_SECONDS = 1.0
 _MAX_RETRY_DELAY_SECONDS = 30.0
-_STEP_TIMEOUT_SECONDS = 600.0  # 10 minutes per model step before retrying
+_INITIAL_TIMEOUT_SECONDS = 300.0  # 5 minutes for first attempt
+_TIMEOUT_INCREMENT_SECONDS = 120.0  # Increase timeout by 2 minutes each retry
 _TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
@@ -77,6 +78,10 @@ def _collect_reasoning_chunks(reasoning_block: object, chunks: list[str]) -> Non
         text = reasoning_block.get("text")
         if isinstance(text, str) and text:
             chunks.append(text)
+        for key in ("reasoning", "thinking"):
+            value = reasoning_block.get(key)
+            if isinstance(value, str) and value and value not in chunks:
+                chunks.append(value)
         summary = reasoning_block.get("summary")
         if isinstance(summary, list):
             for entry in summary:
@@ -117,6 +122,17 @@ def extract_ai_message_content(message: AIMessage) -> tuple[str, list[str], list
                 summary = block.get("summary")
                 if summary:
                     raw_reasoning.append(_format_json({"summary": summary}))
+                _collect_reasoning_chunks(block, reasoning_chunks)
+            elif block_type == "thinking":
+                thinking_text = block.get("thinking")
+                signature = block.get("signature")
+                payload = {}
+                if isinstance(thinking_text, str) and thinking_text:
+                    payload["thinking"] = thinking_text
+                if isinstance(signature, str) and signature:
+                    payload["signature"] = signature
+                if payload:
+                    raw_reasoning.append(_format_json(payload))
                 _collect_reasoning_chunks(block, reasoning_chunks)
             elif block_type == "message":
                 # Anthropic style message blocks may embed text directly.
@@ -219,42 +235,53 @@ def _compute_retry_delay(attempt: int) -> float:
 async def _invoke_model_with_retry(
     llm_with_tools: BaseChatModel, messages: List[BaseMessage], logger: RunLogger
 ) -> AIMessage:
-    """Invoke the model with retries on transient failures."""
+    """Invoke the model with retries on transient failures.
+    
+    Uses progressive timeout: starts at 5 minutes, increases by 2 minutes each retry.
+    Max 3 retries (4 total attempts). If timeout occurs after all retries, marks run as timeout.
+    """
 
-    for attempt in range(1, _MAX_LLM_RETRIES + 1):
+    for attempt in range(1, _MAX_LLM_RETRIES + 2):  # +2 for initial attempt + 3 retries
+        # Progressive timeout: 5min, 7min, 9min, 11min
+        current_timeout = _INITIAL_TIMEOUT_SECONDS + (attempt - 1) * _TIMEOUT_INCREMENT_SECONDS
+        timeout_minutes = int(current_timeout // 60) or 1
+        
         try:
             return await asyncio.wait_for(
                 llm_with_tools.ainvoke(messages),
-                timeout=_STEP_TIMEOUT_SECONDS,
+                timeout=current_timeout,
             )
         except asyncio.CancelledError:  # pragma: no cover - cooperative cancellation
             raise
         except asyncio.TimeoutError:
-            timeout_minutes = int(_STEP_TIMEOUT_SECONDS // 60) or 1
-            if attempt == _MAX_LLM_RETRIES:
+            # If we've exhausted all retries, raise timeout error
+            if attempt > _MAX_LLM_RETRIES:
                 raise TimeoutError(
-                    f"Model call timed out after {timeout_minutes} minute(s)."
+                    f"Model call timed out after {_MAX_LLM_RETRIES} retries. "
+                    f"Final timeout was {timeout_minutes} minute(s). Run marked as timeout."
                 ) from None
             delay = _compute_retry_delay(attempt)
             logger.print(
                 "[yellow]Model call timed out after {timeout} minute(s) "
-                "(attempt {attempt}/{total}); retrying in {delay:.2f}s.[/yellow]".format(
+                "(attempt {attempt}/{total}); retrying in {delay:.2f}s with "
+                "timeout of {next_timeout} minute(s).[/yellow]".format(
                     timeout=timeout_minutes,
                     attempt=attempt,
-                    total=_MAX_LLM_RETRIES,
+                    total=_MAX_LLM_RETRIES + 1,  # +1 for initial attempt
                     delay=delay,
+                    next_timeout=int((current_timeout + _TIMEOUT_INCREMENT_SECONDS) // 60),
                 )
             )
             await asyncio.sleep(delay)
         except Exception as exc:  # noqa: BLE001
-            if not _should_retry_model_error(exc) or attempt == _MAX_LLM_RETRIES:
+            if not _should_retry_model_error(exc) or attempt > _MAX_LLM_RETRIES:
                 raise
             delay = _compute_retry_delay(attempt)
             reason = str(exc).strip() or exc.__class__.__name__
             logger.print(
                 "[yellow]Model call failed (attempt {attempt}/{total}): {reason} – "
                 "retrying in {delay:.2f}s.[/yellow]".format(
-                    attempt=attempt, total=_MAX_LLM_RETRIES, reason=reason, delay=delay
+                    attempt=attempt, total=_MAX_LLM_RETRIES + 1, reason=reason, delay=delay
                 )
             )
             await asyncio.sleep(delay)
@@ -355,7 +382,13 @@ async def _model_step(
             logger.log_tool_call(tool_name, raw_args, raw_response, error=tool_error)
 
             if verifier_hook is not None:
-                await verifier_hook()
+                try:
+                    await verifier_hook()
+                except Exception as verifier_exc:  # noqa: BLE001
+                    # Don't let verifier errors crash the main execution
+                    logger.print(
+                        f"[yellow]Warning: Verifier check failed: {verifier_exc.__class__.__name__}[/yellow]"
+                    )
 
 
 async def execute_scenario(
@@ -406,6 +439,23 @@ async def execute_scenario(
         - Error Handling: Incase a tool call results in an error, retry the tool calling adjusting the parameters based on the error message, retrying with same parameters will only result in the same error.
         """
     )
+
+    model_name = getattr(llm, "model_name", "") or getattr(llm, "model", "")
+    normalized_model = model_name.lower()
+    if normalized_model in {
+        "meta-llama/llama-4-maverick",
+        "meta-llama/llama-4-maverick:nitro",
+        "meta-llama/llama-4-maverick:floor",
+        "llama-4-maverick",
+    }:
+        tool_calling_note = textwrap.dedent(
+            """
+            Tool calling requirement
+            - When tools are provided you must invoke them through the structured function-calling interface (tool calls).
+            - Do not respond with YAML task plans or schema descriptions in place of executing the required tool calls.
+            """
+        )
+        instructions = f"{instructions.rstrip()}\n\n{tool_calling_note.strip()}\n"
 
     scenario_details = scenario_summary(scenario)
     messages: List[BaseMessage] = [

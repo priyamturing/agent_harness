@@ -9,3 +9,4 @@ dist/
 *.db
 *.zip
 *.pytest_cache
+results

@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, List, NamedTuple, Optional, Sequence
+from typing import Callable, Dict, List, NamedTuple, Optional, Sequence, Union
 from uuid import uuid4
 
 import httpx
@@ -23,22 +23,18 @@ from .mcp_loader import MCPConfig, load_tools_from_mcp
 from .prompts import Scenario, load_scenarios
 from .providers import PROVIDERS, create_chat_model, resolve_provider_for_model
 from .run_logging import ConsoleRunLogger, RunLogger, TextualRunLogger
-from .session_picker import SessionDisplay, SessionPickerApp
+from .session_picker import BackgroundRunDisplay, SessionDisplay, SessionPickerApp
 from .textual_ui import MultiRunApp
+from .background_viewer import BackgroundRunViewer
 from .verifier import evaluate_verifiers
+from .gym_loader import get_gym_registry, GymConfig
 from dotenv import load_dotenv
+from . import background_manager
 
 console = Console()
 app = typer.Typer(help="Run Jira MCP benchmarks with LangChain agents.")
 
-DEFAULT_MCP_URL = "http://localhost:8015/mcp"
-DEFAULT_MCP_TRANSPORT = "streamable_http"
 DEFAULT_TOOL_CALL_LIMIT = 1000
-
-_mcp_base = DEFAULT_MCP_URL.rstrip("/")
-if _mcp_base.endswith("/mcp"):
-    _mcp_base = _mcp_base[: -len("/mcp")]
-DEFAULT_SQL_RUNNER_URL = f"{_mcp_base}/api/sql-runner"
 SESSION_MANIFEST_FILENAME = "session.json"
 VIEW_SELECT_SENTINEL = "__SELECT__"
 RESULTS_ROOT = Path("results")
@@ -112,14 +108,16 @@ async def _execute_run(
     artifact_dir: Path,
     prompt_path: Path,
     prompt_alias: str,
+    gym_config: GymConfig,
 ) -> dict:
     run_database_id = str(uuid4())
     logger = logger_factory(run_label, run_database_id)
 
     logger.print(
         Panel(
-            f"Loading tools from MCP server at [bold]{DEFAULT_MCP_URL}[/bold] "
-            f"using transport [bold]{DEFAULT_MCP_TRANSPORT}[/bold]\n"
+            f"Loading tools from MCP server at [bold]{gym_config.mcp_url}[/bold] "
+            f"using transport [bold]{gym_config.mcp_transport}[/bold]\n"
+            f"Gym: [bold cyan]{gym_config.name}[/bold cyan] - {gym_config.description}\n"
             f"[dim]x-database-id={run_database_id}[/dim]",
             title=f"Run {run_label} setup",
         )
@@ -134,10 +132,10 @@ async def _execute_run(
 
     tools = await load_tools_from_mcp(
         MCPConfig(
-            name="jira-mcp-local",
-            transport=DEFAULT_MCP_TRANSPORT,
-            url=DEFAULT_MCP_URL,
-            headers={"x-database-id": run_database_id},
+            name=f"jira-mcp-{gym_config.name}",
+            transport=gym_config.mcp_transport,
+            url=gym_config.mcp_url,
+            headers=gym_config.get_headers_for_run(run_database_id),
         )
     )
 
@@ -171,7 +169,7 @@ async def _execute_run(
                 scenario,
                 tool_call_limit=DEFAULT_TOOL_CALL_LIMIT,
                 logger=logger,
-                sql_runner_url=DEFAULT_SQL_RUNNER_URL,
+                sql_runner_url=gym_config.sql_runner_url,
                 database_id=run_database_id,
                 verifier_client=verifier_client,
             )
@@ -187,7 +185,7 @@ async def _execute_run(
 
             final_results = await evaluate_verifiers(
                 scenario,
-                sql_runner_url=DEFAULT_SQL_RUNNER_URL,
+                sql_runner_url=gym_config.sql_runner_url,
                 database_id=run_database_id,
                 client=verifier_client,
             )
@@ -225,6 +223,8 @@ async def _execute_run(
     artifacts["model"] = actual_model
     artifacts["prompt_file"] = str(prompt_path)
     artifacts["prompt_alias"] = prompt_alias
+    artifacts["gym_name"] = gym_config.name
+    artifacts["gym_url"] = gym_config.mcp_url
     artifacts["status"] = "failed" if run_failed else "completed"
     if run_failed and failure_reason:
         artifacts["failure_reason"] = failure_reason
@@ -261,6 +261,8 @@ async def _execute_run(
         "prompt_file": str(prompt_path),
         "prompt_alias": prompt_alias,
         "artifact_path": str(artifact_file),
+        "gym_name": gym_config.name,
+        "gym_url": gym_config.mcp_url,
         "status": "failed" if run_failed else "completed",
         "failure_reason": failure_reason,
         "failed_scenario_id": failed_scenario_id,
@@ -274,6 +276,7 @@ async def _run_plain(
     temperature: float,
     max_output_tokens: Optional[int],
     artifact_dir: Path,
+    gym_config: GymConfig,
 ) -> List[dict]:
     run_items: List[dict] = []
     multiple_batches = len(scenario_batches) > 1
@@ -313,6 +316,7 @@ async def _run_plain(
             artifact_dir=artifact_dir,
             prompt_path=item["prompt_path"],
             prompt_alias=item["prompt_alias"],
+            gym_config=gym_config,
         )
         for item in run_items
     ]
@@ -329,6 +333,7 @@ async def _run_textual(
     temperature: float,
     max_output_tokens: Optional[int],
     artifact_dir: Path,
+    gym_config: GymConfig,
 ) -> List[dict]:
     run_items: List[dict] = []
     multiple_batches = len(scenario_batches) > 1
@@ -373,6 +378,7 @@ async def _run_textual(
                     artifact_dir=artifact_dir,
                     prompt_path=item["prompt_path"],
                     prompt_alias=item["prompt_alias"],
+                    gym_config=gym_config,
                 )
                 for item in run_items
             ]
@@ -430,6 +436,8 @@ def _render_summary(results: list[dict]) -> None:
     summary_table.add_column("Verifiers")
     summary_table.add_column("Artifact")
 
+    prompt_model_stats = defaultdict(lambda: {"total": 0, "passed": 0})
+
     for result in results:
         total_scenarios = len(result["summary"])
         total_verifiers = sum(len(item[1]) for item in result["summary"])
@@ -447,6 +455,24 @@ def _render_summary(results: list[dict]) -> None:
         if not prompt_value:
             prompt_path_raw = result.get("prompt_file")
             prompt_value = Path(prompt_path_raw).stem if prompt_path_raw else "-"
+        provider_value = result.get("provider") or "-"
+        model_value = result.get("model") or "-"
+        summary_items = result.get("summary") or []
+        all_success = True
+        has_verifiers = False
+        for _, verifier_results in summary_items:
+            for vr in verifier_results or []:
+                has_verifiers = True
+                if not getattr(vr, "success", False):
+                    all_success = False
+                    break
+            if not all_success:
+                break
+        passed_all = has_verifiers and all_success and status_value != "failed"
+        stats_entry = prompt_model_stats[(prompt_value, provider_value, model_value)]
+        stats_entry["total"] += 1
+        if passed_all:
+            stats_entry["passed"] += 1
         summary_table.add_row(
             result["run"],
             status_text,
@@ -460,6 +486,23 @@ def _render_summary(results: list[dict]) -> None:
         )
 
     console.print(summary_table)
+
+    if prompt_model_stats:
+        aggregate_table = Table(title="Full verifier passes by prompt/model")
+        aggregate_table.add_column("Prompt")
+        aggregate_table.add_column("Provider")
+        aggregate_table.add_column("Model")
+        aggregate_table.add_column("Full Passes", justify="right")
+        for (prompt_label, provider_label, model_label), metrics in sorted(
+            prompt_model_stats.items()
+        ):
+            aggregate_table.add_row(
+                prompt_label,
+                provider_label,
+                model_label,
+                f"{metrics['passed']}/{metrics['total']}",
+            )
+        console.print(aggregate_table)
 
 
 def _summarize_models(results: List[dict]) -> list[dict]:
@@ -492,6 +535,39 @@ def _format_model_summary(summary: list[dict]) -> str:
             label = f"{label} ×{count}"
         parts.append(label)
     return ", ".join(parts) if parts else "N/A"
+
+
+def _extract_verifier_counts_from_runs(runs: Sequence[dict] | None) -> tuple[int, int]:
+    total_passed = 0
+    total_checks = 0
+    if not runs:
+        return total_passed, total_checks
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        scenarios = run.get("scenarios") or []
+        for scenario in scenarios:
+            if not isinstance(scenario, dict):
+                continue
+            total = scenario.get("verifiers_total")
+            passed = scenario.get("verifiers_passed")
+            if isinstance(total, int) and total >= 0:
+                total_count = max(total, 0)
+                total_checks += total_count
+                if isinstance(passed, int):
+                    total_passed += max(0, min(passed, total_count))
+    return total_passed, total_checks
+
+
+def _format_verifier_summary_text(passed: int, total: int) -> str:
+    if total <= 0:
+        return "-"
+    percentage = (passed / total) * 100 if total else 0.0
+    if percentage.is_integer():
+        percentage_text = f"{int(percentage)}%"
+    else:
+        percentage_text = f"{percentage:.1f}%"
+    return f"{passed}/{total} ({percentage_text})"
 
 
 def _write_session_manifest(
@@ -539,6 +615,7 @@ def _write_session_manifest(
     created_display = created_at.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z").strip()
     prompt_source_name = prompt_source.stem if prompt_source.is_file() else prompt_source.name
     prompt_file_entries = prompt_files or [prompt_source]
+    passed_count, total_count = _extract_verifier_counts_from_runs(runs_payload)
     manifest = {
         "created_at": created_at.isoformat(),
         "created_at_display": created_display,
@@ -550,6 +627,8 @@ def _write_session_manifest(
         "model_summary_text": _format_model_summary(model_summary),
         "runs": runs_payload,
         "prompt_files": [str(item) for item in prompt_file_entries],
+        "verifier_totals": {"passed": passed_count, "total": total_count},
+        "verifier_summary_text": _format_verifier_summary_text(passed_count, total_count),
     }
     manifest["display_name"] = (
         f"{created_display} • {prompt_source_name} • {manifest['model_summary_text']}"
@@ -613,13 +692,15 @@ def _print_session_list(sessions: list[tuple[Path, dict]]) -> None:
     table.add_column("Session")
     table.add_column("Runs", justify="right")
     table.add_column("Models")
+    table.add_column("Verifiers", justify="right")
     table.add_column("Path", overflow="fold")
 
     for idx, (path, manifest) in enumerate(sessions, start=1):
         display = manifest.get("display_name") or path.name
         run_count = manifest.get("run_count", "-")
         models = manifest.get("model_summary_text", "-")
-        table.add_row(str(idx), display, str(run_count), models, str(path))
+        verifiers = manifest.get("verifier_summary_text", "-")
+        table.add_row(str(idx), display, str(run_count), models, verifiers, str(path))
 
     console.print(table)
 
@@ -650,6 +731,25 @@ def _normalize_manifest(manifest: dict) -> dict:
         manifest["model_summary_text"] = _format_model_summary(summary)
     if "model_summary_text" not in manifest:
         manifest["model_summary_text"] = "-"
+
+    totals_raw = manifest.get("verifier_totals")
+    passed_count: Optional[int] = None
+    total_count: Optional[int] = None
+    if isinstance(totals_raw, dict):
+        raw_passed = totals_raw.get("passed")
+        raw_total = totals_raw.get("total")
+        if isinstance(raw_passed, int) and isinstance(raw_total, int):
+            passed_count = raw_passed
+            total_count = raw_total
+    if passed_count is None or total_count is None:
+        passed_count, total_count = _extract_verifier_counts_from_runs(manifest.get("runs", []))
+        manifest["verifier_totals"] = {
+            "passed": passed_count,
+            "total": total_count,
+        }
+    summary_text = manifest.get("verifier_summary_text")
+    if not isinstance(summary_text, str) or not summary_text.strip():
+        manifest["verifier_summary_text"] = _format_verifier_summary_text(passed_count, total_count)
 
     created_display = manifest.get("created_at_display")
     if not created_display:
@@ -692,25 +792,49 @@ def _load_manifest(session_dir: Path) -> dict:
 
 
 def _select_session_interactive(
-    sessions: list[tuple[Path, dict]], *, use_textual: bool
-) -> Optional[Path]:
-    if not sessions:
-        console.print("No saved sessions found.")
+    sessions: list[tuple[Path, dict]],
+    *,
+    background_runs: Optional[list[background_manager.BackgroundRun]] = None,
+    use_textual: bool
+) -> Optional[Union[Path, str]]:
+    if not sessions and not background_runs:
+        console.print("No saved sessions or background runs found.")
         return None
 
     if use_textual:
-        displays = [
+        session_displays = [
             SessionDisplay(
                 path=path,
                 display_name=manifest.get("display_name") or path.name,
                 runs=manifest.get("run_count", 0),
                 model_summary=manifest.get("model_summary_text", "-"),
+                verifier_summary=manifest.get("verifier_summary_text", "-"),
+                harness_name=manifest.get("harness_name", ""),
+                status="completed",  # Completed sessions
             )
             for path, manifest in sessions
         ]
 
-        async def _run_picker() -> Optional[Path]:
-            picker = SessionPickerApp(displays)
+        bg_displays = []
+        if background_runs:
+            bg_displays = [
+                BackgroundRunDisplay(
+                    run_id=bg_run.run_id,
+                    display_name=bg_run.run_id[-8:],  # Short ID for display
+                    status=bg_run.status,
+                    progress=f"{bg_run.progress['passed']}/{bg_run.progress['total']}",
+                    started_at=background_manager.format_time_ago(bg_run.started_at),
+                    harness_name=bg_run.harness_name,
+                    model_summary=bg_run.model_summary,
+                    run_configs=bg_run.run_configs,
+                    scenario_batches=bg_run.scenario_batches,
+                )
+                for bg_run in background_runs
+                if bg_run.status == "running"
+            ]
+
+        async def _run_picker() -> Optional[Union[Path, str]]:
+            picker = SessionPickerApp(session_displays, background_runs=bg_displays)
             wait_task = asyncio.create_task(picker.wait_for_selection())
             await picker.run_async()
             return await wait_task
@@ -726,21 +850,48 @@ def _select_session_interactive(
                 f"[yellow]Failed to launch Textual picker ({exc!r}). Falling back to console selection.[/yellow]"
             )
 
-    _print_session_list(sessions)
-    max_index = len(sessions)
+    # Console fallback
+    all_items: list[tuple[str, Union[Path, str]]] = []
+    
+    # Add background runs
+    if background_runs:
+        console.print("[bold]In Progress:[/bold]")
+        for bg_run in background_runs:
+            if bg_run.status == "running":
+                console.print(
+                    f"  {len(all_items) + 1}. {bg_run.harness_name} • {bg_run.model_summary} "
+                    f"({bg_run.progress['passed']}/{bg_run.progress['total']} verifiers) - "
+                    f"{background_manager.format_time_ago(bg_run.started_at)}"
+                )
+                all_items.append(("background", bg_run.run_id))
+    
+    # Add completed sessions
+    if sessions:
+        console.print("[bold]Completed:[/bold]")
+        for path, manifest in sessions:
+            display_name = manifest.get("display_name") or path.name
+            console.print(f"  {len(all_items) + 1}. {display_name}")
+            all_items.append(("session", path))
+    
+    max_index = len(all_items)
+    if max_index == 0:
+        console.print("No items to select.")
+        return None
 
     while True:
         response = console.input(
-            f"Select a session [1-{max_index}] (Enter for 1, or 'q' to cancel): "
+            f"Select an item [1-{max_index}] (Enter for 1, or 'q' to cancel): "
         ).strip()
         if not response:
-            return sessions[0][0]
+            item_type, item_value = all_items[0]
+            return item_value
         if response.lower() in {"q", "quit", "exit"}:
             return None
         if response.isdigit():
             value = int(response)
             if 1 <= value <= max_index:
-                return sessions[value - 1][0]
+                item_type, item_value = all_items[value - 1]
+                return item_value
         console.print("[red]Invalid selection.[/red] Please try again.")
 
 
@@ -952,26 +1103,247 @@ def _replay_session(session_dir: Path, manifest: dict, ui_mode: str) -> None:
         _replay_plain_session(manifest, artifacts)
 
 
+def _attach_to_background_run(run_id: str, ui_mode: str) -> None:
+    """Attach to a running background job and show live progress."""
+    run_state = background_manager.read_run_state(run_id)
+    if not run_state:
+        console.print(f"[red]Background run {run_id} not found.[/red]")
+        return
+    
+        console.print(
+            Panel(
+                f"Attaching to background run [bold]{run_id}[/bold]\n"
+                f"Status: {run_state.status}\n"
+                f"Progress: {run_state.progress['passed']}/{run_state.progress['total']} verifiers\n"
+                f"Session: {run_state.session_dir}",
+                title="Background Run Viewer",
+            )
+        )
+    
+    if run_state.status != "running":
+        # Run already completed, just show the session
+        session_dir = Path(run_state.session_dir)
+        if session_dir.exists():
+            manifest = _load_manifest(session_dir)
+            _replay_session(session_dir, manifest, ui_mode)
+        else:
+            console.print(f"[yellow]Session directory not found: {session_dir}[/yellow]")
+        return
+    
+    # For running jobs, tail the logs
+    session_dir = Path(run_state.session_dir)
+    log_files = list(session_dir.glob("run_*.log"))
+    
+    if not log_files:
+        console.print("[yellow]No log files found yet. Run may still be starting...[/yellow]")
+        return
+    
+    if ui_mode == "plain":
+        # Plain mode: just tail the logs to console
+        console.print("[dim]Press Ctrl+C to stop watching[/dim]\n")
+        import time
+        
+        # Track file positions
+        file_positions: dict[Path, int] = {f: 0 for f in log_files}
+        
+        try:
+            while True:
+                # Check if run is still running
+                current_state = background_manager.read_run_state(run_id)
+                if not current_state or current_state.status != "running":
+                    console.print("\n[green]Background run completed.[/green]")
+                    
+                    # Auto-switch to replay mode
+                    if current_state and current_state.status == "completed":
+                        console.print("[cyan]Switching to replay mode in 3 seconds... (Ctrl+C to cancel)[/cyan]")
+                        try:
+                            time.sleep(3)
+                            manifest = _load_manifest(session_dir)
+                            _replay_session(session_dir, manifest, ui_mode)
+                        except KeyboardInterrupt:
+                            console.print("\n[dim]Cancelled replay.[/dim]")
+                    break
+                
+                # Read new content from each log file
+                for log_file in log_files:
+                    if not log_file.exists():
+                        continue
+                    
+                    with open(log_file, "r", encoding="utf-8") as f:
+                        f.seek(file_positions[log_file])
+                        new_content = f.read()
+                        if new_content:
+                            console.print(new_content, end="")
+                        file_positions[log_file] = f.tell()
+                
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            console.print("\n[dim]Detached from background run.[/dim]")
+    else:
+        # Textual mode: use the fancy live viewer
+        viewer = BackgroundRunViewer(run_id, session_dir)
+        result = viewer.run()
+        
+        # If viewer returns a session directory, switch to replay mode
+        if result:
+            manifest = _load_manifest(result)
+            _replay_session(result, manifest, ui_mode)
+
+
 def _handle_view_command(view: Optional[str], ui_mode: str) -> None:
     sessions = _collect_sessions()
+    background_runs = background_manager.list_background_runs()
 
     if view == "list":
+        # Print background runs
+        if background_runs:
+            console.print("[bold]In Progress Background Runs:[/bold]")
+            for bg_run in background_runs:
+                if bg_run.status == "running":
+                    console.print(
+                        f"  • {bg_run.run_id} - {bg_run.harness_name} | "
+                        f"{bg_run.progress['passed']}/{bg_run.progress['total']} verifiers | "
+                        f"{background_manager.format_time_ago(bg_run.started_at)}"
+                    )
         _print_session_list(sessions)
         return
 
     if view in {VIEW_SELECT_SENTINEL, "", None}:
         selection = _select_session_interactive(
-            sessions, use_textual=(ui_mode == "textual")
+            sessions,
+            background_runs=background_runs,
+            use_textual=(ui_mode == "textual")
         )
         if selection is None:
             console.print("Cancelled.")
             return
-        session_dir = selection
+        
+        # Check if selection is a background run (str) or session (Path)
+        if isinstance(selection, str):
+            # It's a background run ID
+            _attach_to_background_run(selection, ui_mode)
+            return
+        else:
+            session_dir = selection
     else:
         session_dir = _resolve_session_path(view)
 
     manifest = _load_manifest(session_dir)
     _replay_session(session_dir, manifest, ui_mode)
+
+
+@app.command()
+def list_gyms(  # noqa: D417 - typer handles CLI docs
+    gym_config_file: Optional[Path] = typer.Option(
+        None,
+        "--config",
+        help="Path to gyms.json configuration file. If not provided, searches for gyms.json in current directory or project root.",
+        show_default=False,
+    ),
+) -> None:
+    """List all available gym configurations."""
+    try:
+        registry = get_gym_registry(gym_config_file)
+        gyms = registry.list_gyms()
+        default_gym = registry.get_default_gym_name()
+        
+        if not gyms:
+            console.print("[yellow]No gyms configured.[/yellow]")
+            console.print(f"Configuration file: {registry.config_path}")
+            return
+        
+        table = Table(title="Available Gyms")
+        table.add_column("Name", style="cyan")
+        table.add_column("Description", style="white")
+        table.add_column("MCP URL", style="blue")
+        table.add_column("Transport", style="magenta")
+        table.add_column("Default", style="green")
+        
+        for gym in sorted(gyms, key=lambda g: g.name):
+            is_default = "✓" if gym.name == default_gym else ""
+            table.add_row(
+                gym.name,
+                gym.description,
+                gym.mcp_url,
+                gym.mcp_transport,
+                is_default,
+            )
+        
+        console.print(table)
+        console.print(f"\n[dim]Configuration file: {registry.config_path}[/dim]")
+        
+    except FileNotFoundError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        console.print("\n[yellow]Example gyms.json:[/yellow]")
+        console.print("""
+{
+  "gyms": {
+    "local": {
+      "name": "local",
+      "description": "Local development server",
+      "mcp_url": "http://localhost:8015/mcp",
+      "mcp_transport": "streamable_http",
+      "sql_runner_url": "http://localhost:8015/api/sql-runner"
+    }
+  },
+  "default": "local"
+}
+""")
+        raise typer.Exit(1) from exc
+    except Exception as exc:
+        console.print(f"[red]Error loading gym configuration:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+
+@app.command()
+def cleanup(  # noqa: D417 - typer handles CLI docs
+    stale_hours: int = typer.Option(
+        24,
+        "--stale-hours",
+        help="Number of hours after which a running job is considered stale.",
+    ),
+    dry_run: bool = typer.Option(
+        True,
+        "--dry-run/--no-dry-run",
+        help="Show what would be cleaned up without actually doing it.",
+    ),
+) -> None:
+    """Clean up stale background runs stuck in 'running' status."""
+    from rich.console import Console
+    from rich.table import Table
+    from . import background_manager
+    
+    console = Console()
+    
+    stale_runs = background_manager.find_stale_runs(stale_hours)
+    
+    if not stale_runs:
+        console.print("[green]✓[/green] No stale runs found.")
+        return
+    
+    table = Table(title=f"Stale Runs (running > {stale_hours}h)")
+    table.add_column("Run ID", style="cyan")
+    table.add_column("Started", style="yellow")
+    table.add_column("Progress", style="magenta")
+    table.add_column("Model", style="blue")
+    
+    for run in stale_runs:
+        time_ago = background_manager.format_time_ago(run.started_at)
+        progress = f"{run.progress['passed']}/{run.progress['total']}"
+        table.add_row(run.run_id, time_ago, progress, run.model_summary)
+    
+    console.print(table)
+    
+    if dry_run:
+        console.print(
+            f"\n[yellow]DRY RUN:[/yellow] Would mark {len(stale_runs)} run(s) as failed."
+        )
+        console.print("Run with [bold]--no-dry-run[/bold] to actually clean them up.")
+    else:
+        cleaned = background_manager.cleanup_stale_runs(stale_hours, dry_run=False)
+        console.print(
+            f"\n[green]✓[/green] Marked {len(cleaned)} stale run(s) as failed."
+        )
 
 
 @app.command()
@@ -996,6 +1368,18 @@ def run(  # noqa: D417 - typer handles CLI docs
             "or '--view <path>' to open a specific session folder."
         ),
         flag_value=VIEW_SELECT_SENTINEL,
+        show_default=False,
+    ),
+    gym: Optional[str] = typer.Option(
+        None,
+        "--gym",
+        help="Name of the gym (MCP server environment) to run against. If not provided, uses the default gym from gyms.json.",
+        show_default=False,
+    ),
+    gym_config_file: Optional[Path] = typer.Option(
+        None,
+        "--gym-config",
+        help="Path to gyms.json configuration file. If not provided, searches for gyms.json in current directory or project root.",
         show_default=False,
     ),
     model: List[str] = typer.Option(  # type: ignore[assignment]
@@ -1030,6 +1414,11 @@ def run(  # noqa: D417 - typer handles CLI docs
         case_sensitive=False,
         help="User interface mode: 'auto', 'plain', or 'textual'.",
     ),
+    background: bool = typer.Option(
+        False,
+        "--background",
+        help="Run benchmarks in background. Use --view to monitor progress.",
+    ),
 ) -> None:
     _load_environment(env_file)
 
@@ -1055,6 +1444,8 @@ def run(  # noqa: D417 - typer handles CLI docs
             forbidden.append("--max-output-tokens")
         if harness_file is not None:
             forbidden.append("--harness-file")
+        if background:
+            forbidden.append("--background")
         if forbidden:
             raise typer.BadParameter(
                 f"--view cannot be combined with {', '.join(forbidden)}."
@@ -1068,6 +1459,28 @@ def run(  # noqa: D417 - typer handles CLI docs
 
     if harness_file is None and prompt_file is None:
         raise typer.BadParameter("Provide either --prompt-file or --harness-file.")
+
+    # Load gym configuration
+    try:
+        registry = get_gym_registry(gym_config_file)
+        gym_config = registry.get_gym(gym)
+        console.print(
+            Panel(
+                f"Using gym: [bold cyan]{gym_config.name}[/bold cyan]\n"
+                f"{gym_config.description}\n"
+                f"MCP URL: [bold]{gym_config.mcp_url}[/bold]",
+                title="Gym Configuration",
+            )
+        )
+    except FileNotFoundError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        console.print("\n[yellow]Tip:[/yellow] Create a gyms.json file or use --gym-config to specify the path.")
+        console.print("Run [bold]python -m jira_mcp_benchmark list-gyms --help[/bold] for more information.")
+        raise typer.Exit(1) from exc
+    except ValueError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        console.print("\nRun [bold]python -m jira_mcp_benchmark list-gyms[/bold] to see available gyms.")
+        raise typer.Exit(1) from exc
 
     prompt_source = harness_file or prompt_file
     param_name = "--harness-file" if harness_file else "--prompt-file"
@@ -1158,6 +1571,41 @@ def run(  # noqa: D417 - typer handles CLI docs
     session_dir = _prepare_session_dir(session_name_base)
     console.print(Panel(f"Storing run artifacts in [bold]{session_dir}[/bold]"))
 
+    # Handle background execution
+    if background:
+        run_id = background_manager.create_background_run_id()
+        harness_name = prompt_source.stem if prompt_source.is_file() else prompt_source.name
+        model_summary = _format_model_summary(_summarize_models([
+            {"provider": config["provider"], "model": config.get("model")}
+            for config in run_configs
+        ]))
+        
+        console.print(
+            Panel(
+                f"Starting background run [bold]{run_id}[/bold]\n"
+                f"Session directory: [bold]{session_dir}[/bold]\n"
+                f"Use [bold]--view[/bold] to monitor progress",
+                title="Background Run",
+            )
+        )
+        
+        try:
+            pid = background_manager.spawn_background_process(
+                run_id=run_id,
+                session_dir=session_dir,
+                harness_name=harness_name,
+                model_summary=model_summary,
+                run_configs=run_configs,
+                scenario_batches=scenario_batches,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+            )
+            console.print(f"[green]Background process started (PID: {pid})[/green]")
+        except Exception as exc:
+            console.print(f"[red]Failed to start background run: {exc}[/red]")
+            raise
+        return
+
     if ui_mode == "textual":
         run_results = asyncio.run(
             _run_textual(
@@ -1166,6 +1614,7 @@ def run(  # noqa: D417 - typer handles CLI docs
                 temperature=temperature,
                 max_output_tokens=max_output_tokens,
                 artifact_dir=session_dir,
+                gym_config=gym_config,
             )
         )
     else:
@@ -1176,6 +1625,7 @@ def run(  # noqa: D417 - typer handles CLI docs
                 temperature=temperature,
                 max_output_tokens=max_output_tokens,
                 artifact_dir=session_dir,
+                gym_config=gym_config,
             )
         )
 

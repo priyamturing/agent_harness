@@ -263,3 +263,120 @@ class TextualRunLogger:
             "log_stream": list(self._artifacts["log_stream"]),
             "status_stream": list(self._artifacts["status_stream"]),
         }
+
+
+class BackgroundRunLogger:
+    """Run logger that writes to files for background runs."""
+
+    def __init__(self, run_id: str, run_label: str, session_dir, width: int = 100) -> None:
+        from pathlib import Path
+
+        self._run_id = run_id
+        self._run_label = run_label
+        self._session_dir = Path(session_dir) if not isinstance(session_dir, Path) else session_dir
+        self._capture_console = Console(
+            color_system=None,
+            force_terminal=False,
+            record=True,
+            width=width,
+        )
+        self._artifacts: Dict[str, list] = {
+            "conversation": [],
+            "verifier_history": [],
+            "log_stream": [],
+            "status_stream": [],
+        }
+        self._log_file = self._session_dir / f"run_{run_label}.log"
+        self._log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    def _write_to_log(self) -> None:
+        text = self._capture_console.export_text(clear=True)
+        if not text.endswith("\n"):
+            text = f"{text}\n"
+        # Append to log file
+        with open(self._log_file, "a", encoding="utf-8") as f:
+            f.write(text)
+        self._artifacts["log_stream"].append(text)
+
+    def print(self, *args, **kwargs) -> None:  # noqa: ANN001
+        self._capture_console.print(*args, **kwargs)
+        self._write_to_log()
+
+    def rule(self, *args, **kwargs) -> None:  # noqa: ANN001
+        self._capture_console.rule(*args, **kwargs)
+        self._write_to_log()
+
+    def update_verifier_status(self, results: Sequence[VerifierResult]) -> None:
+        payload = []
+        snapshot: List[dict] = []
+        for result in results:
+            payload_entry = {
+                "name": result.verifier.name or result.verifier.verifier_type,
+                "comparison": result.comparison_type or "-",
+                "expected": repr(result.expected_value),
+                "actual": repr(result.actual_value)
+                if result.error is None
+                else "-",
+                "status": "PASS" if result.success else "FAIL",
+                "error": result.error,
+            }
+            payload.append(payload_entry)
+            snapshot.append(
+                {
+                    "name": result.verifier.name or result.verifier.verifier_type,
+                    "comparison": result.comparison_type,
+                    "expected": _json_safe(result.expected_value),
+                    "actual": _json_safe(result.actual_value),
+                    "success": result.success,
+                    "error": result.error,
+                }
+            )
+        snapshot_copy = [dict(item) for item in snapshot]
+        self._artifacts["verifier_history"].append(snapshot_copy)
+        self._artifacts["status_stream"].append(payload)
+
+        self._artifacts["conversation"].append(
+            {
+                "type": "verifier_status",
+                "results": [dict(item) for item in snapshot_copy],
+            }
+        )
+
+    def log_tool_call(
+        self, name: str, args: object, response: object | None = None, *, error: bool = False
+    ) -> None:
+        call_entry = {
+            "type": "tool_call",
+            "tool": name,
+            "args": _json_safe(args),
+        }
+        result_entry: Dict[str, Any] = {
+            "type": "tool_result",
+            "tool": name,
+            "output": _json_safe(response),
+        }
+        if error:
+            result_entry["error"] = True
+        self._artifacts["conversation"].extend([call_entry, result_entry])
+
+    def log_message(
+        self, role: str, content: str, *, reasoning: Sequence[str] | None = None
+    ) -> None:
+        if not content and not reasoning:
+            return
+        entry: Dict[str, Any] = {"type": "message", "role": role}
+        if content:
+            entry["content"] = content
+        if reasoning:
+            entry["reasoning"] = list(reasoning)
+        if self._artifacts["conversation"] and self._artifacts["conversation"][-1] == entry:
+            return
+        self._artifacts["conversation"].append(entry)
+
+    def get_artifacts(self) -> dict:
+        return {
+            "conversation": list(self._artifacts["conversation"]),
+            "verifier_history": list(self._artifacts["verifier_history"]),
+            "log_stream": list(self._artifacts["log_stream"]),
+            "status_stream": list(self._artifacts["status_stream"]),
+        }
