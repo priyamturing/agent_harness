@@ -375,9 +375,46 @@ results/
 Each `run_*.json` file contains:
 - Full conversation history (messages, tool calls, responses)
 - Verifier results (pass/fail for each check)
+  - Includes SQL query used for verification
+  - Comparison type and expected/actual values
+  - Success status and error details (if any)
 - Model metadata (provider, model name, temperature)
 - Timing information
 - Error details (if any)
+
+### Verifier Result Format
+
+Example verifier result in `run_*.json`:
+
+```json
+{
+  "scenarios": [
+    {
+      "scenario_id": "create_issue_basic",
+      "verifiers": [
+        {
+          "name": "Issue Created",
+          "comparison": "equals",
+          "expected": 1,
+          "actual": 1,
+          "success": true,
+          "error": null,
+          "sql_query": "SELECT COUNT(*) FROM issues WHERE summary = 'Login button not working'"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Each verifier result includes:
+- `name`: Verifier display name
+- `comparison`: Comparison type used (e.g., "equals")
+- `expected`: Expected value from the benchmark
+- `actual`: Actual value returned from the SQL query
+- `success`: Boolean indicating if verification passed
+- `error`: Error message if verification failed (null if successful)
+- `sql_query`: The SQL query executed for verification
 
 ### Session Manifest
 
