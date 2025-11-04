@@ -73,10 +73,19 @@ def load_scenarios(path: Path) -> list[Scenario]:
                             name=raw_verifier.get("name"),
                         )
                     )
+            raw_expected_tools = prompt.get("expected_tools") or ()
+            if isinstance(raw_expected_tools, str):
+                expected_tools: Sequence[str] = (raw_expected_tools,)
+            else:
+                try:
+                    expected_tools = tuple(raw_expected_tools)
+                except TypeError:
+                    expected_tools = (str(raw_expected_tools),)
+
             prompts.append(
                 ScenarioPrompt(
                     prompt_text=prompt.get("prompt_text", ""),
-                    expected_tools=tuple(prompt.get("expected_tools", [])),
+                    expected_tools=expected_tools,
                     verifiers=tuple(verifiers),
                 )
             )
