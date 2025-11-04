@@ -26,7 +26,7 @@ from .verifier import evaluate_verifiers
 
 from .prompts import Scenario, scenario_summary
 
-_MAX_LLM_RETRIES = 5
+_MAX_LLM_RETRIES = 2
 _BASE_RETRY_DELAY_SECONDS = 1.0
 _MAX_RETRY_DELAY_SECONDS = 30.0
 _STEP_TIMEOUT_SECONDS = 600.0  # 10 minutes per model step before retrying
@@ -118,6 +118,18 @@ def extract_ai_message_content(message: AIMessage) -> tuple[str, list[str], list
                 if summary:
                     raw_reasoning.append(_format_json({"summary": summary}))
                 _collect_reasoning_chunks(block, reasoning_chunks)
+            elif block_type == "thinking":
+                thinking_text = block.get("thinking") or block.get("text")
+                signature = block.get("signature")
+                if thinking_text:
+                    reasoning_chunks.append(thinking_text)
+                entry_payload: dict[str, object] = {}
+                if thinking_text:
+                    entry_payload["thinking"] = thinking_text
+                if signature:
+                    entry_payload["signature"] = signature
+                if entry_payload:
+                    raw_reasoning.append(_format_json(entry_payload))
             elif block_type == "message":
                 # Anthropic style message blocks may embed text directly.
                 text = block.get("text")

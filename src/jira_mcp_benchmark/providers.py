@@ -29,6 +29,13 @@ except ImportError as exc:  # pragma: no cover - handled by dependency managemen
         "langchain-xai is required. Install with `pip install langchain-xai`."
     ) from exc
 
+try:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+except ImportError as exc:  # pragma: no cover - handled by dependency management
+    raise ImportError(
+        "langchain-google-genai is required. Install with `pip install langchain-google-genai`."
+    ) from exc
+
 
 ModelFactory = Callable[[str, float, Optional[int], Dict[str, Any]], BaseChatModel]
 
@@ -97,6 +104,19 @@ def _build_xai(
     return ChatXAI(**kwargs)
 
 
+def _build_google(
+    model: str, temperature: float, max_output_tokens: Optional[int], extra: Dict[str, Any]
+) -> BaseChatModel:
+    kwargs: Dict[str, Any] = {
+        "model": model,
+        "temperature": temperature,
+        "timeout": None,
+        "max_output_tokens": max_output_tokens,
+    }
+    kwargs.update(extra)
+    return ChatGoogleGenerativeAI(**kwargs)
+
+
 _OPENAI_REASONING_MODELS: Final[Tuple[str, ...]] = (
     "gpt-5",
     "gpt-5-mini",
@@ -133,6 +153,18 @@ PROVIDERS: Final[Dict[str, ProviderConfig]] = {
         api_key_env="XAI_API_KEY",
         factory=_build_xai,
         aliases=("grok-4", "grok4", "grok-3-mini", "grok-2"),
+    ),
+    "google": ProviderConfig(
+        name="google",
+        default_model="gemini-2.5-pro",
+        api_key_env="GOOGLE_API_KEY",
+        factory=_build_google,
+        aliases=(
+            "models/gemini-2.5-pro",
+            "gemini-2-5-pro",
+            "gemini-2.5-pro-preview",
+            "gemini-2.5-pro-latest",
+        ),
     ),
 }
 
@@ -209,6 +241,16 @@ def create_chat_model(
             extra_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 42000}
             if temperature != 1.0:
                 temperature = 1.0
+    elif config.name == "google":
+        env_budget = os.environ.get("GOOGLE_THINKING_BUDGET")
+        if env_budget and "thinking_budget" not in extra_kwargs:
+            try:
+                extra_kwargs["thinking_budget"] = int(env_budget)
+            except ValueError as exc:  # pragma: no cover - defensive parsing
+                raise ValueError(
+                    f"Invalid GOOGLE_THINKING_BUDGET value '{env_budget}'. Must be an integer."
+                ) from exc
+        extra_kwargs.setdefault("include_thoughts", True)
 
     return config.factory(model_name, temperature, max_output_tokens, extra_kwargs)
 
@@ -242,6 +284,8 @@ def resolve_provider_for_model(
         return "anthropic"
     if normalized.startswith("grok"):
         return "xai"
+    if normalized.startswith("gemini") or normalized.startswith("models/gemini"):
+        return "google"
 
     raise ValueError(
         f"Unable to infer provider for model '{model}'. "

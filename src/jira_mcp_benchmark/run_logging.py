@@ -103,6 +103,7 @@ class ConsoleRunLogger:
                     "actual": _json_safe(result.actual_value),
                     "success": result.success,
                     "error": result.error,
+                    "sql_query": result.verifier.validation_config.get("query"),
                 }
             )
 
@@ -211,6 +212,7 @@ class TextualRunLogger:
                     "actual": _json_safe(result.actual_value),
                     "success": result.success,
                     "error": result.error,
+                    "sql_query": result.verifier.validation_config.get("query"),
                 }
             )
         snapshot_copy = [dict(item) for item in snapshot]

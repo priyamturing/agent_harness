@@ -23,7 +23,12 @@ class MCPConfig:
 
 
 async def load_tools_from_mcp(config: MCPConfig) -> list[BaseTool]:
-    """Load LangChain-compatible tools from the configured MCP server."""
+    """Load LangChain-compatible tools from the configured MCP server.
+    
+    Note: The MCP client is not returned because it cannot be properly cleaned up
+    (MultiServerMCPClient.cleanup() doesn't exist, __aexit__ raises NotImplementedError).
+    Concurrency is controlled via semaphore in cli.py to prevent file descriptor exhaustion.
+    """
 
     connection: MutableMapping[str, Any] = {"transport": config.transport}
     if config.url:

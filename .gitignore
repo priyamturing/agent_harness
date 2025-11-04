@@ -5,7 +5,12 @@ __pycache__/
 *.egg
 *.egg-info/
 dist/
-*.json
+# *.json
 *.db
 *.zip
 *.pytest_cache
+analysis_output/
+results/
+*.json
+*.csv
+.DS_Store

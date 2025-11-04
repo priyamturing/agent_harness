@@ -34,6 +34,7 @@ app = typer.Typer(help="Run Jira MCP benchmarks with LangChain agents.")
 DEFAULT_MCP_URL = "http://localhost:8015/mcp"
 DEFAULT_MCP_TRANSPORT = "streamable_http"
 DEFAULT_TOOL_CALL_LIMIT = 1000
+MAX_CONCURRENT_RUNS = 20  # Limit concurrent MCP connections to avoid file descriptor exhaustion
 
 _mcp_base = DEFAULT_MCP_URL.rstrip("/")
 if _mcp_base.endswith("/mcp"):
@@ -243,6 +244,7 @@ async def _execute_run(
                         "actual": result.actual_value,
                         "success": result.success,
                         "error": result.error,
+                        "sql_query": result.verifier.validation_config.get("query"),
                     }
                     for result in final_results
                 ],
@@ -301,23 +303,25 @@ async def _run_plain(
         prefix = f"Run {label}" if multiple_runs else None
         return ConsoleRunLogger(console, prefix=prefix)
 
-    tasks = [
-        _execute_run(
-            run_label=item["label"],
-            logger_factory=logger_factory,
-            scenarios=item["scenarios"],
-            provider=item["config"]["provider"],
-            model=item["config"]["model"],
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,
-            artifact_dir=artifact_dir,
-            prompt_path=item["prompt_path"],
-            prompt_alias=item["prompt_alias"],
-        )
-        for item in run_items
-    ]
-
-    results = [await tasks[0]] if len(tasks) == 1 else await asyncio.gather(*tasks)
+    # Use semaphore to limit concurrent MCP connections and prevent file descriptor exhaustion
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_RUNS)
+    
+    async def run_with_semaphore(item: dict) -> dict:
+        async with semaphore:
+            return await _execute_run(
+                run_label=item["label"],
+                logger_factory=logger_factory,
+                scenarios=item["scenarios"],
+                provider=item["config"]["provider"],
+                model=item["config"]["model"],
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+                artifact_dir=artifact_dir,
+                prompt_path=item["prompt_path"],
+                prompt_alias=item["prompt_alias"],
+            )
+    
+    results = await asyncio.gather(*[run_with_semaphore(item) for item in run_items])
     _render_summary(results)
     return list(results)
 
@@ -359,24 +363,26 @@ async def _run_textual(
     app = MultiRunApp(run_labels, queues)
     app_task = asyncio.create_task(app.run_async())
 
+    # Use semaphore to limit concurrent MCP connections and prevent file descriptor exhaustion
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_RUNS)
+    
+    async def run_with_semaphore(item: dict) -> dict:
+        async with semaphore:
+            return await _execute_run(
+                run_label=item["label"],
+                logger_factory=logger_factory,
+                scenarios=item["scenarios"],
+                provider=item["config"]["provider"],
+                model=item["config"]["model"],
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+                artifact_dir=artifact_dir,
+                prompt_path=item["prompt_path"],
+                prompt_alias=item["prompt_alias"],
+            )
+
     try:
-        results = await asyncio.gather(
-            *[
-                _execute_run(
-                    run_label=item["label"],
-                    logger_factory=logger_factory,
-                    scenarios=item["scenarios"],
-                    provider=item["config"]["provider"],
-                    model=item["config"]["model"],
-                    temperature=temperature,
-                    max_output_tokens=max_output_tokens,
-                    artifact_dir=artifact_dir,
-                    prompt_path=item["prompt_path"],
-                    prompt_alias=item["prompt_alias"],
-                )
-                for item in run_items
-            ]
-        )
+        results = await asyncio.gather(*[run_with_semaphore(item) for item in run_items])
     finally:
         await app.action_quit()
         await app_task

@@ -1,107 +1,444 @@
-# Jira MCP Benchmark Runner
+# Jira MCP Benchmark
 
-This project provides a small LangChain-based CLI that drives a locally running Jira MCP server and executes prompt scenarios end-to-end with the LLM of your choice. The workflow was designed around the sample benchmark prompts in `old_sample_new_system_1_benchmark.json`.
+A comprehensive benchmarking harness for testing LLM agents against a local Jira MCP (Model Context Protocol) server. This tool enables systematic evaluation of different LLM providers (OpenAI, Anthropic, Google, xAI) performing project management tasks through MCP tools.
 
-## Features
+## Table of Contents
 
-- Connects to a local MCP server (defaults to `http://localhost:8015/mcp`) using `langchain-mcp-adapters`
-- Runs each benchmark scenario without any interactive input from the user
-- Supports the latest model identifiers for OpenAI, Anthropic, and xAI:
-  - OpenAI: `gpt-5-high` (mapped to `gpt-5` with reasoning effort set to `high`) and `gpt-4o` (runs without reasoning traces)
-  - Anthropic: `claude-sonnet-4-5` (extended thinking enabled automatically)
-  - xAI: `grok-4`
-- Launches multiple models (even across providers) in a single CLI invocation; pass `--model` more than once and the CLI auto-selects the correct provider for each model
-- Binds all MCP tools to the selected LLM so it can call them while solving the scenario
-- Streams any reasoning traces emitted by the model for easier debugging
-- Automatically provisions a unique MCP workspace each run by sending an `x-database-id` header
-- Requests OpenAI reasoning summaries and encrypted reasoning tokens for reasoning-capable models so follow-up turns can reference prior cogitation if needed
-- Replays the harness verifiers after every MCP tool call (and again at the end of each scenario) so progress is visible in real time
-- Optional Textual-based UI so every parallel run can stream into its own terminal tab
-- Writes per-run JSON artifacts (conversation history, tool calls, verifier snapshots) inside `results/`, under a session folder named after the harness file
-- Captures a session manifest so you can revisit prior runs with `--view` in either the Textual UI or plain console mode
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Usage](#usage)
+  - [Running Benchmarks](#running-benchmarks)
+  - [Viewing Results](#viewing-results)
+  - [Command Reference](#command-reference)
+- [Benchmark Format](#benchmark-format)
+- [Supported Models](#supported-models)
+- [Output & Results](#output--results)
+- [Troubleshooting](#troubleshooting)
+- [Roadmap](#roadmap)
+
+## Overview
+
+This benchmark harness:
+- Connects to a local MCP server (Jira implementation) via HTTP transport
+- Executes predefined scenarios with multiple prompts and verification steps
+- Supports parallel runs with isolated database instances
+- Provides both plain console and rich TUI (Textual) interfaces
+- Records detailed artifacts including conversation logs and verifier results
+- Enables cross-model comparison and replay of previous sessions
+
+## Architecture
+
+```
+┌────────────────────────────────────────────────────────┐
+│                    Benchmark Harness (CLI)             │
+│                                                        │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
+│  │   OpenAI     │  │  Anthropic   │  │   Google     │  │
+│  │   Provider   │  │   Provider   │  │   Provider   │  │
+│  └──────┬───────┘  └───────┬──────┘  └──────┬───────┘  │
+│         │                  │                │          │
+│         └──────────────────┴────────────────┘          │
+│                            │                           │
+│                    ┌───────▼────────┐                  │
+│                    │  LangChain     │                  │
+│                    │  Agent Loop    │                  │
+│                    └───────┬────────┘                  │
+│                            │                           │
+│                    ┌───────▼────────┐                  │
+│                    │  MCP Adapter   │                  │
+│                    │  (langchain-   │                  │
+│                    │   mcp-adapters)│                  │
+│                    └───────┬────────┘                  │
+└────────────────────────────┼───────────────────────────┘
+                             │
+                             │ HTTP (streamable_http transport)
+                             │ x-database-id header for isolation
+                             │
+                    ┌────────▼────────┐
+                    │                 │
+                    │   Jira MCP      │
+                    │   Server        │
+                    │                 │
+                    │  Port: 8015     │
+                    │  Endpoint:      │
+                    │  /mcp           │
+                    │                 │
+                    └─────────────────┘
+```
+
+### Key Components
+
+1. **CLI (`cli.py`)**: Main entry point, handles argument parsing, session management, and orchestration
+2. **Agent (`agent.py`)**: Executes scenarios using LangChain, manages tool calls and retries
+3. **MCP Loader (`mcp_loader.py`)**: Connects to MCP server and loads tools
+4. **Providers (`providers.py`)**: Abstracts different LLM providers (OpenAI, Anthropic, Google, xAI)
+5. **Verifier (`verifier.py`)**: Validates agent outputs against expected results
+6. **Run Logging**: Captures conversation history and status updates
+
+## Prerequisites
+
+### 1. Jira MCP Server
+
+**CRITICAL**: You must have a Jira MCP server running locally before using this harness.
+
+- **Port**: `8015` (default)
+- **Endpoint**: `http://localhost:8015/mcp`
+- **Transport**: `streamable_http`
+- **Required Header**: `x-database-id` (automatically set by harness for database isolation)
+
+The harness expects the MCP server to:
+- Accept HTTP connections on port 8015
+- Provide MCP tools via the `/mcp` endpoint
+- Support the `x-database-id` header for multi-tenant database isolation
+- Expose a SQL runner endpoint at `http://localhost:8015/api/sql-runner` for verifiers
+
+**Note**: The MCP server is NOT included in this repository. You must set it up separately.
+
+### 2. Python Environment
+
+- Python 3.10 or higher
+- pip or uv package manager
+
+### 3. API Keys
+
+You'll need API keys for the LLM providers you want to test:
+- **OpenAI**: `OPENAI_API_KEY`
+- **Anthropic**: `ANTHROPIC_API_KEY`
+- **Google**: `GOOGLE_API_KEY`
+- **xAI**: `XAI_API_KEY`
 
 ## Installation
 
+### Option 1: Using pip
+
 ```bash
+# Clone the repository
+git clone <repository-url>
+cd agent_harness
+
+# Create virtual environment
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install dependencies
 pip install -e .
 ```
 
-The editable install will pull the required LangChain integrations defined in `pyproject.toml`.
-
-## Environment variables
-
-Environment variables can be loaded automatically from a `.env` file. Copy `.env.example` to `.env` and set the appropriate keys, or point the CLI at a specific file with `--env-file`.
+### Option 2: Using uv (recommended)
 
 ```bash
-cp .env.example .env
+# Clone the repository
+git clone <repository-url>
+cd agent_harness
+
+# Install with uv
+uv pip install -e .
 ```
 
-Alternatively, export the variables directly in your shell:
+## Configuration
+
+### Environment Variables
+
+Create a `.env` file in the project root:
 
 ```bash
-export OPENAI_API_KEY=...
-export ANTHROPIC_API_KEY=...
-export XAI_API_KEY=...
+# Required: At least one provider API key
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+GOOGLE_API_KEY=...
+XAI_API_KEY=...
+
+# Optional: Google thinking budget
+GOOGLE_THINKING_BUDGET=10000
 ```
 
-## Running the benchmark
+Alternatively, export these variables in your shell:
 
 ```bash
+export OPENAI_API_KEY="sk-..."
+export ANTHROPIC_API_KEY="sk-ant-..."
+```
+
+### MCP Server Configuration
+
+The harness uses these default settings (currently hardcoded in `cli.py`):
+
+```python
+DEFAULT_MCP_URL = "http://localhost:8015/mcp"
+DEFAULT_MCP_TRANSPORT = "streamable_http"
+DEFAULT_SQL_RUNNER_URL = "http://localhost:8015/api/sql-runner"
+```
+
+**To change these**: Edit the constants in `src/jira_mcp_benchmark/cli.py` if your MCP server runs on a different port or endpoint.
+
+## Usage
+
+### Running Benchmarks
+
+#### Basic Usage
+
+```bash
+# Run with default model (gpt-5-high)
+python -m jira_mcp_benchmark --prompt-file test_harness.json
+
+# Run with specific model
+python -m jira_mcp_benchmark --prompt-file test_harness.json --model claude-sonnet-4-5
+
+# Run with multiple models for comparison
 python -m jira_mcp_benchmark \
-  --harness-file harness/old_sample_new_system_1_benchmark.json \
-  --env-file .env \
-  --runs 3
+  --prompt-file test_harness.json \
+  --model gpt-5-high \
+  --model claude-sonnet-4-5 \
+  --model gemini-2.5-pro
 ```
 
-Additional useful options:
-
-- `--model`: request a specific model; repeat to run multiple models (optionally prefix with `<provider>:` to disambiguate, e.g. `--model anthropic:claude-4.5-sonnet-reasoning`)
-- `--temperature`: adjust sampling temperature (default `0.1`)
-- `--max-output-tokens`: limit the maximum number of generated tokens
-- `--harness-file`: select any benchmark JSON file without changing the default
-- `--env-file`: load environment variable overrides from a specific `.env` file
-- `--runs`: launch multiple parallel executions, each with its own MCP database
-- `--ui`: choose `textual` to open a multi-pane terminal UI (default `auto` picks Textual when `--runs > 1`)
-- `--view`: replay a saved session (see below)
-
-You must provide either `--harness-file` or `--prompt-file`; the CLI will exit if neither is supplied.
-
-When you run the command the CLI will:
-
-1. Load the benchmark scenarios from the JSON file
-2. Fetch all available tools from the configured MCP server
-3. Instantiate the requested LLM
-4. Execute every prompt sequentially without pausing for user confirmation
-
-## Replaying saved sessions
-
-Each invocation writes a manifest plus per-run artifacts inside `results/` in a folder named `<harness>_<n>`. You can revisit those runs at any time:
+#### Advanced Options
 
 ```bash
-# List all saved sessions (newest first)
-python -m jira_mcp_benchmark --view list
+# Multiple parallel runs with unique databases
+python -m jira_mcp_benchmark \
+  --prompt-file test_harness.json \
+  --model gpt-5-high \
+  --runs 3
 
-# Launch an interactive picker (arrow keys to navigate)
+# Run entire directory of test files
+python -m jira_mcp_benchmark --prompt-file test_harness_small_10-20/
+
+# Custom temperature and token limits
+python -m jira_mcp_benchmark \
+  --prompt-file test_harness.json \
+  --model gpt-5-high \
+  --temperature 0.5 \
+  --max-output-tokens 4096
+
+# Force plain console output (no TUI)
+python -m jira_mcp_benchmark \
+  --prompt-file test_harness.json \
+  --model gpt-5-high \
+  --ui plain
+
+# Use custom .env file
+python -m jira_mcp_benchmark \
+  --prompt-file test_harness.json \
+  --env-file .env.production
+```
+
+### Viewing Results
+
+#### List Previous Sessions
+
+```bash
+# List all saved sessions
+python -m jira_mcp_benchmark --view list
+```
+
+#### Interactive Session Picker
+
+```bash
+# Launch interactive session picker (TUI)
 python -m jira_mcp_benchmark --view
 
-# Replay a specific session in Textual UI
-python -m jira_mcp_benchmark --view new_sys_task13_7_c1_p1_r8_1_benchmark_4 --ui textual
-
-# Replay the same session in plain console mode
-python -m jira_mcp_benchmark --view new_sys_task13_7_c1_p1_r8_1_benchmark_4 --ui plain
+# Use plain console picker
+python -m jira_mcp_benchmark --view --ui plain
 ```
 
-While replaying, the Textual UI rebuilds the original log panes and live verifier table for each run. Plain mode streams the saved log output back to the console.
+#### View Specific Session
 
-## Notes
+```bash
+# View by path
+python -m jira_mcp_benchmark --view results/test_harness_1
 
-- The CLI automatically targets the local Jira MCP server at `http://localhost:8015/mcp` using the `http` transport; adjust the code if your deployment differs.
-- Each scenario allows up to 1000 MCP tool invocations by default; raise or lower the limit in `src/jira_mcp_benchmark/cli.py` if needed.
-- A fresh UUID is used for the `x-database-id` header on every invocation so each run operates against an isolated MCP database instance.
-- Verifier queries are executed via `POST /api/sql-runner` using the same `x-database-id`, so ensure that endpoint is reachable on the MCP host.
-- When running multiple parallel executions, the default `textual` UI gives each run its own tab so logs never interleave; switch back to `--ui plain` if you prefer classic console output.
-- Each CLI invocation creates a new session folder under `results/` named `<harness>_<n>` containing one JSON artifact per run. Each artifact records the interleaved conversation, tool calls/results, and verifier snapshots in execution order.
-- The CLI uses LangChain's tool binding APIs; tool responses and final assistant messages are echoed to the terminal to aid debugging.
-- If you add new scenarios, simply update the JSON file—no code changes are required.
+# View with TUI replay
+python -m jira_mcp_benchmark --view results/test_harness_1 --ui textual
+```
+
+### Command Reference
+
+```
+python -m jira_mcp_benchmark [OPTIONS]
+
+Options:
+  --prompt-file PATH           Benchmark JSON file or directory
+  --harness-file PATH          Alternative to --prompt-file
+  --model TEXT                 Model to run (can be repeated)
+                              Format: [provider:]model
+                              Examples: gpt-5-high, anthropic:claude-sonnet-4-5
+  --temperature FLOAT          Sampling temperature (0.0-1.0) [default: 0.1]
+  --max-output-tokens INTEGER  Maximum output tokens
+  --runs INTEGER               Number of parallel runs [default: 1]
+  --ui [auto|plain|textual]    UI mode [default: auto]
+  --env-file PATH              Load environment from .env file
+  --view [PATH|list]           View previous session
+  --help                       Show help message
+```
+
+## Benchmark Format
+
+Benchmark files are JSON files with the following structure:
+
+```json
+{
+  "scenarios": [
+    {
+      "scenario_id": "create_issue_basic",
+      "name": "Create Basic Issue",
+      "description": "Test creating a simple issue in a project",
+      "conversation_mode": false,
+      "metadata": {},
+      "prompts": [
+        {
+          "prompt_text": "Create a new bug issue in project DEMO with summary 'Login button not working'",
+          "expected_tools": ["mcp_jira-mcp-frozen_create_issue"],
+          "verifier": {
+            "verifier_type": "database_state",
+            "name": "Issue Created",
+            "validation_config": {
+              "query": "SELECT COUNT(*) FROM issues WHERE summary = 'Login button not working'",
+              "expected_value": 1,
+              "comparison_type": "equals"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Verifier Types
+
+- **database_state**: Execute SQL query against the MCP server's SQL runner endpoint and compare result
+  - Supports `comparison_type`: `equals` (only comparison type currently implemented)
+  - Requires `query`, `expected_value`, and `comparison_type` in `validation_config`
+
+## Supported Models
+
+### OpenAI
+- `gpt-5-high` (default, with high reasoning effort)
+- `gpt-5`
+- `gpt-5-mini`
+- `gpt-4o` (also accepts `gpt4o`)
+- `o4-mini`
+
+### Anthropic
+- `claude-sonnet-4-5` (default, with extended thinking)
+- `claude-4.5-sonnet`
+- `claude-4.5-sonnet-reasoning`
+- `claude-sonnet-4.5`
+- `claude-sonnet-4.5-reasoning`
+
+### Google
+- `gemini-2.5-pro` (default)
+- `gemini-2.5-pro-latest`
+- `gemini-2.5-pro-preview`
+- `gemini-2-5-pro`
+- `models/gemini-2.5-pro`
+
+### xAI
+- `grok-4` (default, also accepts `grok4`)
+- `grok-3-mini`
+- `grok-2`
+
+### Specifying Providers
+
+```bash
+# Auto-detect provider
+--model gpt-5-high
+
+# Explicit provider
+--model openai:gpt-5-high
+--model anthropic:claude-sonnet-4-5
+--model google:gemini-2.5-pro
+--model xai:grok-4
+```
+
+## Output & Results
+
+### Session Directory Structure
+
+Each run creates a session directory in `results/`:
+
+```
+results/
+└── test_harness_1/
+    ├── session.json              # Session metadata and summary
+    ├── run_gpt-5-high.json       # Detailed run artifacts
+    ├── run_claude-sonnet-4-5.json
+    └── ...
+```
+
+### Artifact Contents
+
+Each `run_*.json` file contains:
+- Full conversation history (messages, tool calls, responses)
+- Verifier results (pass/fail for each check)
+- Model metadata (provider, model name, temperature)
+- Timing information
+- Error details (if any)
+
+### Session Manifest
+
+The `session.json` file includes:
+- Timestamp and display name
+- List of all runs with summaries
+- Model usage statistics
+- Prompt file references
+
+## Troubleshooting
+
+### MCP Connection Issues
+
+**Error**: `Failed to connect to MCP server`
+
+**Solution**:
+1. Verify MCP server is running: `curl http://localhost:8015/mcp`
+2. Check the port (default: 8015)
+3. Ensure no firewall is blocking localhost connections
+
+### API Key Errors
+
+**Error**: `OPENAI_API_KEY is not set`
+
+**Solution**:
+1. Create `.env` file with API keys
+2. Or export environment variables
+3. Use `--env-file` to specify custom .env location
+
+### File Descriptor Exhaustion
+
+**Error**: `Too many open files`
+
+**Solution**: The harness limits concurrent MCP connections to 20 (see `MAX_CONCURRENT_RUNS` in `cli.py`). If you still hit limits:
+1. Reduce `--runs` parameter
+2. Increase system file descriptor limit: `ulimit -n 4096`
+
+### Model Timeout
+
+**Error**: `Model call timed out after 10 minute(s)`
+
+**Solution**: The harness retries automatically. If persistent:
+1. Check your network connection
+2. Verify API key is valid
+3. Check provider status page
+
+## Roadmap
+
+### Planned Features
+
+- [ ] **Proper background run support**: Run benchmarks as daemon processes with progress monitoring
+- [ ] **Multiple MCP server support**: Connect to and test against multiple MCP servers simultaneously
+- [ ] **Extended model support**: Add support for more providers (Cohere, Mistral, etc.)
+- [ ] **Benchmark analytics**: Built-in analysis and visualization of results
+
+### Current Limitations
+
+- MCP server URL/port is hardcoded (requires code change to modify)
+- Single MCP server connection per run
+- No built-in MCP server management
+- Limited to HTTP transport (no stdio or SSE support yet)
+
+
+
