@@ -1,6 +1,6 @@
 """Console observer for displaying agent execution."""
 
-from typing import Any
+from typing import Any, Optional
 
 from mcp_benchmark_sdk import RunObserver, VerifierResult
 from rich.console import Console
@@ -10,7 +10,7 @@ from rich.table import Table
 class ConsoleObserver(RunObserver):
     """Observer that prints agent execution to console using Rich."""
 
-    def __init__(self, console: Console | None = None, prefix: str | None = None):
+    def __init__(self, console: Optional[Console] = None, prefix: Optional[str] = None):
         """Initialize console observer.
 
         Args:
@@ -26,7 +26,7 @@ class ConsoleObserver(RunObserver):
             self.console.print(f"[bold][{self.prefix}][/bold]")
 
     async def on_message(
-        self, role: str, content: str, metadata: dict[str, Any] | None = None
+        self, role: str, content: str, metadata: Optional[dict[str, Any]] = None
     ) -> None:
         """Display message."""
         self._emit_prefix()

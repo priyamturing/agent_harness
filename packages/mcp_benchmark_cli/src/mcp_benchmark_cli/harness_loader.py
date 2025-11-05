@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from mcp_benchmark_sdk import (
     DatabaseVerifier,
@@ -100,7 +100,7 @@ def load_harness_file(path: Path) -> list[Scenario]:
 def scenario_to_task(
     scenario: Scenario,
     mcps: list[MCPConfig],
-    database_id: str | None = None,
+    database_id: Optional[str] = None,
 ) -> Task:
     """Convert Scenario to SDK Task.
 

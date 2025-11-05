@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from ..tasks import AgentResponse, ToolCall, ToolResult
@@ -14,7 +14,7 @@ class RunObserver(ABC):
 
     @abstractmethod
     async def on_message(
-        self, role: str, content: str, metadata: dict[str, Any] | None = None
+        self, role: str, content: str, metadata: Optional[dict[str, Any]] = None
     ) -> None:
         """Called when a message is added to the conversation.
 
@@ -63,7 +63,7 @@ class NoOpObserver(RunObserver):
     """No-op observer that does nothing."""
 
     async def on_message(
-        self, role: str, content: str, metadata: dict[str, Any] | None = None
+        self, role: str, content: str, metadata: Optional[dict[str, Any]] = None
     ) -> None:
         pass
 

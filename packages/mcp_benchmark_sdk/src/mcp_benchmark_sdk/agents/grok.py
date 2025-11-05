@@ -12,7 +12,7 @@ from langchain_core.messages import AIMessage, BaseMessage
 from ..parsers import XAIResponseParser, ResponseParser
 from ..tasks import AgentResponse
 from ..utils import retry_with_backoff
-from .base import Agent
+from .base import Agent, _DEFAULT_LLM_TIMEOUT_SECONDS
 
 
 class GrokAgent(Agent):
@@ -29,7 +29,7 @@ class GrokAgent(Agent):
         temperature: float = 0.1,
         max_output_tokens: Optional[int] = None,
         system_prompt: Optional[str] = None,
-        tool_call_limit: int = 1000,
+        tool_call_limit: Optional[int] = 1000,
         **kwargs,
     ):
         """Initialize Grok agent.
@@ -39,9 +39,17 @@ class GrokAgent(Agent):
             temperature: Sampling temperature
             max_output_tokens: Maximum output tokens
             system_prompt: Optional system prompt
-            tool_call_limit: Maximum tool calls
+            tool_call_limit: Maximum tool calls (None = no limit)
             **kwargs: Additional arguments for ChatXAI
+            
+        Raises:
+            EnvironmentError: If XAI_API_KEY is not set
         """
+        if not os.environ.get("XAI_API_KEY"):
+            raise EnvironmentError(
+                "XAI_API_KEY is not set. Export the API key before running."
+            )
+        
         super().__init__(system_prompt=system_prompt, tool_call_limit=tool_call_limit)
         self.model = model
         self.temperature = temperature
@@ -50,12 +58,6 @@ class GrokAgent(Agent):
 
     def _build_llm(self) -> BaseChatModel:
         """Build Grok model with configuration."""
-        # Check API key
-        if not os.environ.get("XAI_API_KEY"):
-            raise EnvironmentError(
-                "XAI_API_KEY is not set. Export the API key before running."
-            )
-
         config: dict[str, Any] = {
             "model": self.model,
             "temperature": self.temperature,
@@ -95,7 +97,7 @@ class GrokAgent(Agent):
         ai_message = await retry_with_backoff(
             _invoke,
             max_retries=2,
-            timeout_seconds=600.0,
+            timeout_seconds=_DEFAULT_LLM_TIMEOUT_SECONDS,
             on_retry=lambda attempt, exc, delay: None,
         )
 

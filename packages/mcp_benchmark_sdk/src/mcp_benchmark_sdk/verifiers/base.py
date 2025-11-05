@@ -34,7 +34,7 @@ class VerifierResult:
     actual_value: Optional[Any]
     comparison_type: Optional[str]
     error: Optional[str] = None
-    metadata: dict[str, Any] | None = None
+    metadata: Optional[dict[str, Any]] = None
 
 
 class Verifier(ABC):

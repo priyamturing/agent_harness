@@ -4,7 +4,7 @@ import asyncio
 import re
 from asyncio import QueueEmpty
 from datetime import datetime
-from typing import Any, Dict, Iterable, Union
+from typing import Any, Dict, Iterable, Optional, Union
 
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -523,7 +523,7 @@ class MultiRunApp(App[None]):
         self,
         run_labels: Iterable[str],
         queues: Dict[str, asyncio.Queue],
-        completion_event: asyncio.Event | None = None,
+        completion_event: Optional[asyncio.Event] = None,
     ) -> None:
         """Initialize multi-run app.
 

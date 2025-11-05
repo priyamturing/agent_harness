@@ -71,30 +71,19 @@ class MCPClientManager:
         # Fix tools with reserved keyword parameters
         self._tools = fix_tool_schemas(raw_tools)
 
-    def get_tools(self, server_name: Optional[str] = None) -> list[BaseTool]:
-        """Get tools from specific server or all servers.
-
-        Args:
-            server_name: Optional server name to filter tools
-
+    def get_all_tools(self) -> list[BaseTool]:
+        """Get all tools from all connected servers.
+        
         Returns:
-            List of LangChain tools
+            List of LangChain tools from all MCP servers
+            
+        Raises:
+            RuntimeError: If client not connected
         """
         if not self._client:
             raise RuntimeError("Client not connected. Call connect() first.")
-
-        if server_name is None:
-            return self._tools
-
-        # Filter tools by server name (tools have server prefix in name)
-        return [
-            tool for tool in self._tools
-            if tool.name.startswith(f"mcp_{server_name}_")
-        ]
-
-    def get_all_tools(self) -> list[BaseTool]:
-        """Get all tools from all connected servers."""
-        return self.get_tools()
+        
+        return self._tools
 
     async def cleanup(self) -> None:
         """Cleanup MCP connections.

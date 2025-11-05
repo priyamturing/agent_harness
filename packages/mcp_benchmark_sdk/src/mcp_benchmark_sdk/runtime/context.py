@@ -10,6 +10,10 @@ import httpx
 
 from .events import NoOpObserver, RunObserver
 
+# HTTP client timeout configuration (used for database verifiers)
+_DEFAULT_HTTP_TIMEOUT = 30.0  # Overall timeout in seconds
+_DEFAULT_HTTP_CONNECT_TIMEOUT = 10.0  # Connection timeout in seconds
+
 
 @dataclass
 class RunContext:
@@ -45,7 +49,7 @@ class RunContext:
             self.observers.remove(observer)
 
     async def notify_message(
-        self, role: str, content: str, metadata: dict[str, Any] | None = None
+        self, role: str, content: str, metadata: Optional[dict[str, Any]] = None
     ) -> None:
         """Notify observers of a message."""
         for observer in self.observers:
@@ -73,10 +77,24 @@ class RunContext:
             await observer.on_status(message, level)
 
     def get_http_client(self) -> httpx.AsyncClient:
-        """Get or create the HTTP client."""
+        """Get or create the HTTP client.
+        
+        Returns:
+            Active httpx.AsyncClient instance
+            
+        Note:
+            If the client was closed externally without being set to None,
+            this method will detect it and create a new client.
+        """
         if self.http_client is None:
             self.http_client = httpx.AsyncClient(
-                timeout=httpx.Timeout(30.0, connect=10.0)
+                timeout=httpx.Timeout(_DEFAULT_HTTP_TIMEOUT, connect=_DEFAULT_HTTP_CONNECT_TIMEOUT)
+            )
+        elif self.http_client.is_closed:
+            # Client was closed externally without being set to None
+            # Recreate it instead of returning closed client
+            self.http_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(_DEFAULT_HTTP_TIMEOUT, connect=_DEFAULT_HTTP_CONNECT_TIMEOUT)
             )
         return self.http_client
 

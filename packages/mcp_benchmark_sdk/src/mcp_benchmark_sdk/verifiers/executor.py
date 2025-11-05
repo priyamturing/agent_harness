@@ -9,6 +9,9 @@ import httpx
 if TYPE_CHECKING:
     from .base import Verifier, VerificationContext, VerifierResult
 
+# Import timeout constants from runtime.context
+from ..runtime.context import _DEFAULT_HTTP_TIMEOUT, _DEFAULT_HTTP_CONNECT_TIMEOUT
+
 
 async def execute_verifiers(
     verifiers: list["Verifier"],
@@ -34,7 +37,9 @@ async def execute_verifiers(
 
     owns_client = http_client is None
     if http_client is None:
-        http_client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0))
+        http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(_DEFAULT_HTTP_TIMEOUT, connect=_DEFAULT_HTTP_CONNECT_TIMEOUT)
+        )
 
     context = VerificationContext(
         sql_runner_url=sql_runner_url,

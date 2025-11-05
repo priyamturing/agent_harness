@@ -3,7 +3,7 @@
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, Union
 
 from mcp_benchmark_sdk import Result
 
@@ -11,7 +11,7 @@ from mcp_benchmark_sdk import Result
 class SessionManager:
     """Manages saving and loading benchmark run sessions."""
 
-    def __init__(self, results_root: str | Path = "results"):
+    def __init__(self, results_root: Union[str, Path] = "results"):
         """Initialize session manager.
 
         Args:
@@ -54,7 +54,7 @@ class SessionManager:
         result: Result,
         model_name: str,
         scenario_id: str,
-        metadata: dict[str, Any] | None = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> Path:
         """Save a single result to the session directory.
 
@@ -110,7 +110,7 @@ class SessionManager:
         self,
         session_dir: Path,
         runs: list[dict[str, Any]],
-        name: str | None = None,
+        name: Optional[str] = None,
     ) -> Path:
         """Save session manifest.
 

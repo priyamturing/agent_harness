@@ -1,7 +1,7 @@
 """Common utilities for response parsing."""
 
 import json
-from typing import Any
+from typing import Any, Optional
 
 
 def format_json(value: object) -> str:
@@ -21,7 +21,8 @@ def format_json(value: object) -> str:
 def collect_reasoning_chunks(
     reasoning_block: object, 
     chunks: list[str],
-    max_depth: int = 10
+    max_depth: int = 10,
+    _initial_depth: Optional[int] = None
 ) -> None:
     """Normalize reasoning data from various providers into text snippets.
 
@@ -31,13 +32,18 @@ def collect_reasoning_chunks(
         reasoning_block: Reasoning data structure to parse
         chunks: List to append extracted text chunks to
         max_depth: Maximum recursion depth (default: 10)
+        _initial_depth: Internal parameter to track original max_depth
     
     Raises:
         RecursionError: If nesting depth exceeds max_depth (security protection)
     """
-    if max_depth < 0:
+    if _initial_depth is None:
+        _initial_depth = max_depth
+    
+    # With max_depth=10, this allows depths 0-9 (10 levels total)
+    if max_depth <= 0:
         raise RecursionError(
-            f"Reasoning structure nesting depth exceeded maximum limit of 10 levels. "
+            f"Reasoning structure nesting depth exceeded maximum limit of {_initial_depth} levels. "
             f"This may indicate malformed or malicious data. "
             f"The current task will be marked as failed."
         )
@@ -58,17 +64,17 @@ def collect_reasoning_chunks(
         summary = reasoning_block.get("summary")
         if isinstance(summary, list):
             for entry in summary:
-                collect_reasoning_chunks(entry, chunks, max_depth - 1)
+                collect_reasoning_chunks(entry, chunks, max_depth - 1, _initial_depth)
         elif isinstance(summary, dict):
-            collect_reasoning_chunks(summary, chunks, max_depth - 1)
+            collect_reasoning_chunks(summary, chunks, max_depth - 1, _initial_depth)
 
         steps = reasoning_block.get("steps")
         if isinstance(steps, list):
             for step in steps:
-                collect_reasoning_chunks(step, chunks, max_depth - 1)
+                collect_reasoning_chunks(step, chunks, max_depth - 1, _initial_depth)
         return
 
     if isinstance(reasoning_block, list):
         for entry in reasoning_block:
-            collect_reasoning_chunks(entry, chunks, max_depth - 1)
+            collect_reasoning_chunks(entry, chunks, max_depth - 1, _initial_depth)
 

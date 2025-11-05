@@ -4,26 +4,58 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+import httpx
+
 from .base import Verifier, VerificationContext, VerifierResult
 
 
 def _extract_scalar_value(response_json: dict) -> Any:
-    """Best-effort extraction of first scalar value from SQL runner response."""
+    """Extract first scalar value from SQL runner response.
+    
+    Validates that the query returns exactly one column to avoid ambiguity.
+    
+    Args:
+        response_json: Response from SQL runner endpoint
+        
+    Returns:
+        The scalar value from the first row, first column
+        
+    Raises:
+        ValueError: If query returns multiple columns (ambiguous which to use)
+    """
     if not response_json:
         return None
 
     # Common format: {"rows": [[1]], "columns": ["COUNT(*)"]}
     rows = response_json.get("rows")
+    columns = response_json.get("columns")
+    
     if isinstance(rows, list) and rows:
         first_row = rows[0]
-        if isinstance(first_row, list) and first_row:
-            return first_row[0]
+        if isinstance(first_row, list):
+            # Validate single column if metadata is available
+            if columns and isinstance(columns, list) and len(columns) > 1:
+                raise ValueError(
+                    f"Query returned {len(columns)} columns: {columns}. "
+                    f"Database verifier queries must return exactly 1 column. "
+                    f"Use aggregate functions (COUNT(*), SUM(column), etc.) or select a single column."
+                )
+            if first_row:
+                return first_row[0]
 
     # Alternate format: {"data": [{"COUNT(*)": 1}]}
     data = response_json.get("data")
     if isinstance(data, list) and data:
         first_entry = data[0]
         if isinstance(first_entry, dict):
+            # Validate single column
+            if len(first_entry) > 1:
+                cols = list(first_entry.keys())
+                raise ValueError(
+                    f"Query returned {len(cols)} columns: {cols}. "
+                    f"Database verifier queries must return exactly 1 column. "
+                    f"Use aggregate functions (COUNT(*), SUM(column), etc.) or select a single column."
+                )
             for value in first_entry.values():
                 return value
 
@@ -35,7 +67,7 @@ def _extract_scalar_value(response_json: dict) -> Any:
     return None
 
 
-def _compare(actual: Any, expected: Any, comparison: str | None) -> bool:
+def _compare(actual: Any, expected: Any, comparison: Optional[str]) -> bool:
     """Compare actual vs expected using comparison type.
     
     Supported comparisons (with aliases):
@@ -171,14 +203,22 @@ class DatabaseVerifier(Verifier):
                 metadata={"query": self.query},
             )
 
-        except Exception as exc:
+        except httpx.HTTPError as exc:
+            # Catch only network/HTTP errors - these are runtime failures
+            # Let other exceptions propagate:
+            # - ValueError: Task configuration errors (multi-column queries, invalid comparisons)
+            #   → Should stop entire task immediately, not just fail verifier
+            # - TypeError: Programming errors (type mismatches in comparison)
+            #   → Should propagate for easier debugging
+            # - AttributeError, NameError, etc.: Programming bugs
+            #   → Should propagate with full stack trace
             return VerifierResult(
                 name=self.name,
                 success=False,
                 expected_value=self.expected_value,
                 actual_value=None,
                 comparison_type=self.comparison,
-                error=str(exc),
+                error=f"{type(exc).__name__}: {exc}",
                 metadata={"query": self.query},
             )
 

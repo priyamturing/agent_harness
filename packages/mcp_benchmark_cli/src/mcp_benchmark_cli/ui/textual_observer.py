@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from typing import Any
+from typing import Any, Optional
 
 from mcp_benchmark_sdk import RunObserver, VerifierResult
 
@@ -69,7 +69,7 @@ class TextualObserver(RunObserver):
                     pass
 
     async def on_message(
-        self, role: str, content: str, metadata: dict[str, Any] | None = None
+        self, role: str, content: str, metadata: Optional[dict[str, Any]] = None
     ) -> None:
         """Log message with Rich markup."""
         # Add to artifacts

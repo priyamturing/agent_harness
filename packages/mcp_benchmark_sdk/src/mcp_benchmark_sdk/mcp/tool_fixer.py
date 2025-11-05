@@ -71,10 +71,22 @@ def fix_tool_schemas(tools: list[BaseTool]) -> list[BaseTool]:
         )
 
         # Create wrapper tool that translates parameters
+        # IMPORTANT: Copy all metadata and configuration from original tool
         class FixedTool(BaseTool):
             name: str = tool.name
             description: str = tool.description
             args_schema: type[BaseModel] = new_schema
+            
+            # Copy critical tool configuration and metadata
+            return_direct: bool = tool.return_direct
+            verbose: bool = tool.verbose
+            callbacks: Any = tool.callbacks
+            tags: Any = tool.tags
+            metadata: Any = tool.metadata
+            handle_tool_error: Any = tool.handle_tool_error
+            handle_validation_error: Any = tool.handle_validation_error
+            response_format: str = tool.response_format
+            
             # Store field mapping and original tool to avoid closure variable capture bug
             _field_mapping: dict[str, str] = field_mapping
             _original_tool: BaseTool = tool

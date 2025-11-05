@@ -20,6 +20,9 @@ from ..tasks import AgentResponse, Result, Task, ToolCall, ToolResult
 from ..utils import retry_with_backoff
 from ..verifiers import VerifierResult, execute_verifiers
 
+# Default timeout for LLM API calls (10 minutes)
+_DEFAULT_LLM_TIMEOUT_SECONDS = 600.0
+
 
 class Agent(ABC):
     """Base agent class with multi-level API.
@@ -33,13 +36,13 @@ class Agent(ABC):
     def __init__(
         self,
         system_prompt: Optional[str] = None,
-        tool_call_limit: int = 1000,
+        tool_call_limit: Optional[int] = 1000,
     ):
         """Initialize agent.
 
         Args:
             system_prompt: Optional system prompt for the agent (None = no system message)
-            tool_call_limit: Maximum tool calls before stopping
+            tool_call_limit: Maximum tool calls before stopping (None = no limit)
         """
         self.system_prompt = system_prompt
         self.tool_call_limit = tool_call_limit
@@ -51,6 +54,10 @@ class Agent(ABC):
         self._tools: list[BaseTool] = []
         self._tool_map: dict[str, BaseTool] = {}
         self._llm: Optional[BaseChatModel] = None
+        
+        # Ownership tracking for resource cleanup
+        # If agent creates RunContext internally, it's responsible for cleaning it up
+        self._owns_run_context: bool = False
 
     # ============ High-Level API ============
 
@@ -70,10 +77,21 @@ class Agent(ABC):
 
         Returns:
             Result with final status and messages
+            
+        Note:
+            If run_context is not provided, the agent creates and owns it,
+            and will clean it up automatically. If you provide your own
+            run_context, you're responsible for cleaning it up (e.g., using
+            'async with RunContext() as ctx').
         """
+        # Track RunContext ownership for proper cleanup
         if run_context is None:
-            # Only pass database_id if provided; otherwise let RunContext auto-generate UUID
+            # Agent creates and owns the RunContext
             run_context = RunContext() if task.database_id is None else RunContext(database_id=task.database_id)
+            self._owns_run_context = True
+        else:
+            # User provided RunContext - they're responsible for cleanup
+            self._owns_run_context = False
 
         await self.initialize(task, run_context)
         try:
@@ -163,6 +181,24 @@ class Agent(ABC):
                 tool_call_id = generated_id
             else:
                 tool_call_id = tc.id
+            
+            if not tc.name or not tc.name.strip():
+                error_msg = (
+                    "Invalid tool call: missing or empty tool name. "
+                    "This indicates a malformed LLM response."
+                )
+                results.append(
+                    ToolResult(
+                        content=error_msg,
+                        tool_call_id=tool_call_id,
+                        is_error=True,
+                    )
+                )
+                if self._run_context:
+                    await self._run_context.notify_tool_call(
+                        "<empty_name>", tc.arguments, error_msg, is_error=True
+                    )
+                continue
             
             tool = self._tool_map.get(tc.name)
 
@@ -259,7 +295,7 @@ class Agent(ABC):
             self._task.verifiers,
             self._run_context.sql_runner_url,
             self._run_context.database_id,
-            self._run_context.http_client,
+            self._run_context.get_http_client(),
         )
 
         if self._run_context:
@@ -295,7 +331,18 @@ class Agent(ABC):
 
         Returns:
             List of ToolMessage objects
+            
+        Raises:
+            RuntimeError: If tool_calls and results length mismatch
         """
+        if len(tool_calls) != len(results):
+            error_msg = (
+                f"Tool calls/results mismatch: {len(tool_calls)} calls "
+                f"but {len(results)} results. This indicates a bug in call_tools() "
+                f"or its override."
+            )
+            raise RuntimeError(error_msg)
+        
         messages: list[BaseMessage] = []
 
         for tc, result in zip(tool_calls, results):
@@ -310,11 +357,12 @@ class Agent(ABC):
         return messages
 
     async def cleanup(self) -> None:
-        """Cleanup resources (MCP connections, LLM clients, etc.).
+        """Cleanup resources (MCP connections, LLM clients, RunContext, etc.).
         
         Performs defensive cleanup of all agent resources:
         - MCP client connections
         - LangChain LLM clients (if they support cleanup)
+        - RunContext (HTTP client) if agent owns it
         
         This method is safe to call multiple times and will attempt
         cleanup even if resources don't explicitly support it.
@@ -322,6 +370,11 @@ class Agent(ABC):
         # Clean MCP connections
         if self._mcp_manager:
             await self._mcp_manager.cleanup()
+        
+        # Clean RunContext if we own it (created internally in run())
+        # If user provided their own RunContext, they're responsible for cleanup
+        if self._owns_run_context and self._run_context:
+            await self._run_context.cleanup()
         
         # Defensive cleanup of LLM resources
         # Different LangChain providers may or may not have cleanup methods
@@ -331,7 +384,7 @@ class Agent(ABC):
                 try:
                     await self._llm.aclose()  # type: ignore[attr-defined]
                 except Exception:
-                    pass  # Ignore cleanup errors
+                    pass  
             
             # Strategy 2: Check for sync close method
             elif hasattr(self._llm, 'close'):
@@ -380,7 +433,6 @@ class Agent(ABC):
         remaining_tool_calls = self.tool_call_limit
         all_reasoning: list[str] = []
 
-        # Notify initial messages
         for msg in messages:
             if isinstance(msg, SystemMessage):
                 content = self._extract_text_content(msg.content)
@@ -392,7 +444,6 @@ class Agent(ABC):
         for step in range(max_steps):
             await run_context.notify_status(f"Step {step + 1}/{max_steps}", "info")
 
-            # Get model response
             try:
                 response, ai_message = await self.get_response(messages)
             except Exception as exc:
@@ -448,7 +499,17 @@ class Agent(ABC):
                 if remaining_tool_calls is not None:
                     if remaining_tool_calls < len(response.tool_calls):
                         await run_context.notify_status("Tool call limit reached", "warning")
-                        break
+                        # Return immediately with correct reason, don't fall through to max_steps
+                        verifier_results = await self.run_verifiers()
+                        return Result(
+                            success=False,
+                            messages=messages,
+                            verifier_results=verifier_results,
+                            metadata={"steps": step + 1, "reason": "tool_call_limit_reached"},
+                            database_id=run_context.database_id,
+                            reasoning_traces=all_reasoning,
+                            error="Tool call limit reached",
+                        )
                     remaining_tool_calls -= len(response.tool_calls)
 
                 tool_results = await self.call_tools(response.tool_calls)

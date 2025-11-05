@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from typing import Any, Optional
 
 from langchain_anthropic import ChatAnthropic
@@ -12,7 +13,11 @@ from langchain_core.messages import AIMessage, BaseMessage
 from ..parsers import AnthropicResponseParser, ResponseParser
 from ..tasks import AgentResponse
 from ..utils import retry_with_backoff
-from .base import Agent
+from .base import Agent, _DEFAULT_LLM_TIMEOUT_SECONDS
+
+# Claude thinking mode token configuration
+_THINKING_SAFETY_MARGIN_TOKENS = 1000  # Extra tokens above thinking budget for output
+_THINKING_DEFAULT_OUTPUT_TOKENS = 8192  # Default output tokens when no max specified
 
 
 class ClaudeAgent(Agent):
@@ -27,12 +32,12 @@ class ClaudeAgent(Agent):
     def __init__(
         self,
         model: str = "claude-sonnet-4-5",
-        temperature: float = 0.1,
+        temperature: float = 1.0,
         max_output_tokens: Optional[int] = None,
         enable_thinking: bool = True,
         thinking_budget_tokens: int = 42000,
         system_prompt: Optional[str] = None,
-        tool_call_limit: int = 1000,
+        tool_call_limit: Optional[int] = 1000,
         **kwargs,
     ):
         """Initialize Claude agent.
@@ -44,9 +49,26 @@ class ClaudeAgent(Agent):
             enable_thinking: Enable extended thinking
             thinking_budget_tokens: Token budget for thinking
             system_prompt: Optional system prompt
-            tool_call_limit: Maximum tool calls
+            tool_call_limit: Maximum tool calls (None = no limit)
             **kwargs: Additional arguments for ChatAnthropic
+            
+        Raises:
+            EnvironmentError: If ANTHROPIC_API_KEY is not set
         """
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            raise EnvironmentError(
+                "ANTHROPIC_API_KEY is not set. Export the API key before running."
+            )
+        
+        if enable_thinking and temperature != 1.0:
+            warnings.warn(
+                f"Claude thinking mode requires temperature=1.0. "
+                f"Your temperature={temperature} will be overridden. "
+                f"Set temperature=1.0 or enable_thinking=False to suppress this warning.",
+                UserWarning,
+                stacklevel=2
+            )
+        
         super().__init__(system_prompt=system_prompt, tool_call_limit=tool_call_limit)
         self.model = model
         self.temperature = temperature
@@ -57,13 +79,6 @@ class ClaudeAgent(Agent):
 
     def _build_llm(self) -> BaseChatModel:
         """Build Claude model with configuration."""
-        # Check API key
-        if not os.environ.get("ANTHROPIC_API_KEY"):
-            raise EnvironmentError(
-                "ANTHROPIC_API_KEY is not set. Export the API key before running."
-            )
-
-        # Normalize model name
         model_name = self.model
         normalized_model = model_name.lower()
 
@@ -75,7 +90,6 @@ class ClaudeAgent(Agent):
         }:
             model_name = "claude-sonnet-4-5"
 
-        # Build configuration
         config: dict[str, Any] = {
             "model": model_name,
             "temperature": self.temperature,
@@ -100,9 +114,12 @@ class ClaudeAgent(Agent):
             
             # max_tokens must be > thinking_budget_tokens
             if self.max_output_tokens is not None:
-                config["max_tokens"] = max(self.max_output_tokens, self.thinking_budget_tokens + 1000)
+                config["max_tokens"] = max(
+                    self.max_output_tokens,
+                    self.thinking_budget_tokens + _THINKING_SAFETY_MARGIN_TOKENS
+                )
             else:
-                config["max_tokens"] = self.thinking_budget_tokens + 8192  # Default to budget + 8k
+                config["max_tokens"] = self.thinking_budget_tokens + _THINKING_DEFAULT_OUTPUT_TOKENS
         elif self.max_output_tokens is not None:
             config["max_tokens"] = self.max_output_tokens
 
@@ -123,7 +140,7 @@ class ClaudeAgent(Agent):
         ai_message = await retry_with_backoff(
             _invoke,
             max_retries=2,
-            timeout_seconds=600.0,  # 10 minutes
+            timeout_seconds=_DEFAULT_LLM_TIMEOUT_SECONDS,
             on_retry=lambda attempt, exc, delay: None,  # Could log via RunContext
         )
 

@@ -12,7 +12,7 @@ from langchain_core.messages import AIMessage, BaseMessage
 from ..parsers import OpenAIResponseParser, ResponseParser
 from ..tasks import AgentResponse
 from ..utils import retry_with_backoff
-from .base import Agent
+from .base import Agent, _DEFAULT_LLM_TIMEOUT_SECONDS
 
 
 _REASONING_MODELS = frozenset({
@@ -40,7 +40,7 @@ class GPTAgent(Agent):
         max_output_tokens: Optional[int] = None,
         reasoning_effort: str = "high",
         system_prompt: Optional[str] = None,
-        tool_call_limit: int = 1000,
+        tool_call_limit: Optional[int] = 1000,
         **kwargs,
     ):
         """Initialize GPT agent.
@@ -51,9 +51,17 @@ class GPTAgent(Agent):
             max_output_tokens: Maximum completion tokens
             reasoning_effort: Reasoning effort (low, medium, high)
             system_prompt: Optional system prompt
-            tool_call_limit: Maximum tool calls
+            tool_call_limit: Maximum tool calls (None = no limit)
             **kwargs: Additional arguments for ChatOpenAI
+            
+        Raises:
+            EnvironmentError: If OPENAI_API_KEY is not set
         """
+        if not os.environ.get("OPENAI_API_KEY"):
+            raise EnvironmentError(
+                "OPENAI_API_KEY is not set. Export the API key before running."
+            )
+        
         super().__init__(system_prompt=system_prompt, tool_call_limit=tool_call_limit)
         self.model = model
         self.temperature = temperature
@@ -63,12 +71,6 @@ class GPTAgent(Agent):
 
     def _build_llm(self) -> BaseChatModel:
         """Build OpenAI model with configuration."""
-        # Check API key
-        if not os.environ.get("OPENAI_API_KEY"):
-            raise EnvironmentError(
-                "OPENAI_API_KEY is not set. Export the API key before running."
-            )
-
         # Normalize and configure model
         model_name = self.model
         normalized_model = model_name.lower()
@@ -118,7 +120,7 @@ class GPTAgent(Agent):
         ai_message = await retry_with_backoff(
             _invoke,
             max_retries=2,
-            timeout_seconds=600.0,
+            timeout_seconds=_DEFAULT_LLM_TIMEOUT_SECONDS,
             on_retry=lambda attempt, exc, delay: None,
         )
 

@@ -2,7 +2,7 @@
 
 import asyncio
 import random
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Optional, TypeVar
 
 import httpx
 
@@ -33,7 +33,7 @@ def compute_retry_delay(attempt: int, base_delay: float = _BASE_RETRY_DELAY_SECO
     return min(_MAX_RETRY_DELAY_SECONDS, exponential + jitter)
 
 
-def _extract_status_code(exc: Exception) -> int | None:
+def _extract_status_code(exc: Exception) -> Optional[int]:
     """Best-effort extraction of HTTP status code from exception."""
     for attr in ("status_code", "status", "code"):
         value = getattr(exc, attr, None)
@@ -93,8 +93,8 @@ def should_retry_error(exc: Exception) -> bool:
 async def retry_with_backoff(
     func: Callable[..., Any],
     max_retries: int = 2,
-    timeout_seconds: float | None = None,
-    on_retry: Callable[[int, Exception, float], None] | None = None,
+    timeout_seconds: Optional[float] = None,
+    on_retry: Optional[Callable[[int, Exception, float], None]] = None,
 ) -> Any:
     """Retry a function with exponential backoff.
 
@@ -117,14 +117,14 @@ async def retry_with_backoff(
             return await func()
         except asyncio.CancelledError:
             raise
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as timeout_exc:
             if attempt == max_retries:
                 raise TimeoutError(
                     f"Operation timed out after {timeout_seconds} seconds"
-                ) from None
+                ) from timeout_exc
             delay = compute_retry_delay(attempt)
             if on_retry:
-                on_retry(attempt, TimeoutError("timeout"), delay)
+                on_retry(attempt, timeout_exc, delay)
             await asyncio.sleep(delay)
         except Exception as exc:
             if not should_retry_error(exc) or attempt == max_retries:
