@@ -14,3 +14,4 @@ results/
 *.json
 *.csv
 .DS_Store
+.cursor/
