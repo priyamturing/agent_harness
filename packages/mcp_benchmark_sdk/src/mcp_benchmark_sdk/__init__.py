@@ -12,7 +12,7 @@ from .tasks import Task, Result, Scenario, ScenarioPrompt
 from .mcp import MCPConfig, MCPClientManager
 
 # Verifiers
-from .verifiers import Verifier, DatabaseVerifier, execute_verifiers, VerifierResult
+from .verifiers import Verifier, DatabaseVerifier, VerifierResult
 
 # Runtime context and events
 from .runtime import RunContext, RunObserver
@@ -46,7 +46,6 @@ __all__ = [
     "Verifier",
     "DatabaseVerifier",
     "VerifierResult",
-    "execute_verifiers",
     # Parsers
     "ResponseParser",
     "ParsedResponse",

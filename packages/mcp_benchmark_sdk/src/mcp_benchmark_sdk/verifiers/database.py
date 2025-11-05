@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 import httpx
 
-from .base import Verifier, VerificationContext, VerifierResult
+from .base import Verifier, VerifierResult
 
 
 def _extract_scalar_value(response_json: dict) -> Any:
@@ -148,14 +148,19 @@ class DatabaseVerifier(Verifier):
         self,
         query: str,
         expected_value: Any,
+        sql_runner_url: str,
+        database_id: str,
         comparison: str = "equals",
         name: Optional[str] = None,
+        http_client: Optional[httpx.AsyncClient] = None,
     ):
         """Initialize database verifier.
 
         Args:
             query: SQL query to execute
             expected_value: Expected value from query
+            sql_runner_url: SQL runner endpoint URL
+            database_id: Database ID for isolation
             comparison: Comparison type. Supports:
                 - equals, eq, ==
                 - greater_than, gt, >
@@ -163,6 +168,7 @@ class DatabaseVerifier(Verifier):
                 - greater_than_equal, greater_than_or_equal, greater_than_or_equal_to, gte, >=
                 - less_than_equal, less_than_or_equal, less_than_or_equal_to, lte, <=
             name: Optional display name
+            http_client: Optional HTTP client (will create one if not provided)
             
         Raises:
             ValueError: If comparison type is unsupported
@@ -170,15 +176,24 @@ class DatabaseVerifier(Verifier):
         super().__init__(name or "DatabaseVerifier")
         self.query = query
         self.expected_value = expected_value
+        self.sql_runner_url = sql_runner_url
+        self.database_id = database_id
         self.comparison = comparison
+        self._http_client = http_client
+        self._owns_client = http_client is None
 
-    async def verify(self, context: VerificationContext) -> VerifierResult:
+    async def verify(self) -> VerifierResult:
         """Execute SQL query and compare result."""
+        http_client = self._http_client
+        
+        if http_client is None:
+            http_client = httpx.AsyncClient(timeout=30.0)
+        
         try:
-            response = await context.http_client.post(
-                context.sql_runner_url,
+            response = await http_client.post(
+                self.sql_runner_url,
                 headers={
-                    "x-database-id": context.database_id,
+                    "x-database-id": self.database_id,
                     "Content-Type": "application/json",
                 },
                 json={
@@ -204,14 +219,6 @@ class DatabaseVerifier(Verifier):
             )
 
         except httpx.HTTPError as exc:
-            # Catch only network/HTTP errors - these are runtime failures
-            # Let other exceptions propagate:
-            # - ValueError: Task configuration errors (multi-column queries, invalid comparisons)
-            #   → Should stop entire task immediately, not just fail verifier
-            # - TypeError: Programming errors (type mismatches in comparison)
-            #   → Should propagate for easier debugging
-            # - AttributeError, NameError, etc.: Programming bugs
-            #   → Should propagate with full stack trace
             return VerifierResult(
                 name=self.name,
                 success=False,
@@ -221,4 +228,7 @@ class DatabaseVerifier(Verifier):
                 error=f"{type(exc).__name__}: {exc}",
                 metadata={"query": self.query},
             )
+        finally:
+            if self._owns_client and http_client is not None:
+                await http_client.aclose()
 

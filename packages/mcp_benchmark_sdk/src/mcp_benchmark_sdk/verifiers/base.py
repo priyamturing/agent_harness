@@ -6,23 +6,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Optional
 
-import httpx
-
-
-@dataclass
-class VerificationContext:
-    """Context for executing verifiers.
-
-    Provides access to:
-    - SQL runner endpoint
-    - Database ID for isolation
-    - HTTP client for requests
-    """
-
-    sql_runner_url: str
-    database_id: str
-    http_client: httpx.AsyncClient
-
 
 @dataclass
 class VerifierResult:
@@ -42,17 +25,17 @@ class Verifier(ABC):
 
     Verifiers validate agent execution results by checking
     system state, API responses, database contents, etc.
+    
+    Each verifier is self-contained and receives all dependencies
+    through its constructor.
     """
 
     def __init__(self, name: Optional[str] = None):
         self.name = name or self.__class__.__name__
 
     @abstractmethod
-    async def verify(self, context: VerificationContext) -> VerifierResult:
+    async def verify(self) -> VerifierResult:
         """Execute verification and return result.
-
-        Args:
-            context: Verification context with database ID, HTTP client, etc.
 
         Returns:
             VerifierResult with success status and details

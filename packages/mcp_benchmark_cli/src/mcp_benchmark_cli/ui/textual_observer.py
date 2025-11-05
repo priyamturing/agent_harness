@@ -5,7 +5,7 @@ import json
 from typing import Any, Optional
 
 from mcp_benchmark_sdk import RunContext, RunObserver, VerifierResult
-from mcp_benchmark_sdk.verifiers import Verifier
+from mcp_benchmark_sdk.tasks.scenario import VerifierDefinition
 
 from ..verifier_runner import VerifierRunner
 
@@ -33,7 +33,7 @@ class TextualObserver(RunObserver):
         self,
         queue: asyncio.Queue,
         width: int = 100,
-        verifiers: Optional[list[Verifier]] = None,
+        verifier_defs: Optional[list[VerifierDefinition]] = None,
         run_context: Optional[RunContext] = None,
     ):
         """Initialize textual observer.
@@ -41,7 +41,7 @@ class TextualObserver(RunObserver):
         Args:
             queue: Queue to send messages to Textual app
             width: Console width (not used, kept for compatibility)
-            verifiers: Optional list of verifiers to run after each tool call
+            verifier_defs: Optional list of verifier definitions to run after each tool call
             run_context: Optional runtime context for running verifiers
         """
         self._queue = queue
@@ -55,9 +55,10 @@ class TextualObserver(RunObserver):
         self._last_drop_warning = 0
         
         # Verification support (optional)
-        self.verifiers = verifiers or []
-        self.run_context = run_context
-        self.verifier_runner = VerifierRunner() if verifiers else None
+        self.verifier_runner = (
+            VerifierRunner(verifier_defs, run_context)
+            if verifier_defs and run_context else None
+        )
 
     def _enqueue(self, text: str) -> None:
         """Send text directly to queue (RichLog handles markup)."""
@@ -159,11 +160,8 @@ class TextualObserver(RunObserver):
             self._enqueue(f"{result_str}\n\n")
         
         # Run verifiers if configured (optional)
-        if self.verifiers and self.run_context and not is_error and self.verifier_runner:
-            verifier_results = await self.verifier_runner.run_verifiers(
-                self.verifiers,
-                self.run_context
-            )
+        if self.verifier_runner and not is_error:
+            verifier_results = await self.verifier_runner.run_verifiers()
             self._display_verifier_results(verifier_results)
 
     def _display_verifier_results(self, verifier_results: list[Any]) -> None:

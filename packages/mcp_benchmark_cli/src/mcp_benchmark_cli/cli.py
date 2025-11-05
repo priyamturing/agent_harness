@@ -319,17 +319,17 @@ async def run_all_plain(
                 tool_call_limit=tool_call_limit,
             )
             
-            # Convert scenario to task and extract verifiers separately
-            task, verifiers = scenario_to_task(cfg["scenario"], [mcp_config])
+            # Convert scenario to task and extract verifier definitions separately
+            task, verifier_defs = scenario_to_task(cfg["scenario"], [mcp_config])
             
             # Create RunContext
             run_context = RunContext(sql_runner_url=sql_runner_url)
             
-            # Add console observer for output (with optional verifiers)
+            # Add console observer for output (with optional verifier definitions)
             observer = ConsoleObserver(
                 console=console,
                 prefix=cfg["label"],
-                verifiers=verifiers,
+                verifier_defs=verifier_defs,
                 run_context=run_context,
             )
             run_context.add_observer(observer)
@@ -338,8 +338,8 @@ async def run_all_plain(
             result = await agent.run(task, max_steps=max_steps, run_context=run_context)
             
             # Run verification separately (CLI orchestrates this)
-            verifier_runner = VerifierRunner()
-            verifier_results = await verifier_runner.run_verifiers(verifiers, run_context)
+            verifier_runner = VerifierRunner(verifier_defs, run_context)
+            verifier_results = await verifier_runner.run_verifiers()
             
             # Enrich result with verifier results
             result.verifier_results = verifier_results
@@ -472,19 +472,19 @@ async def run_benchmark_plain(
                 console.print(f"[dim]{scenario.description}[/dim]\n")
 
                 try:
-                    # Convert to Task and extract verifiers separately
-                    task, verifiers = scenario_to_task(scenario, [mcp_config])
+                    # Convert to Task and extract verifier definitions separately
+                    task, verifier_defs = scenario_to_task(scenario, [mcp_config])
 
                     # Create RunContext with observer and SQL runner
                     run_context = RunContext(
                         sql_runner_url=sql_runner_url,
                     )
 
-                    # Add console observer (with optional verifiers)
+                    # Add console observer (with optional verifier definitions)
                     observer = ConsoleObserver(
                         console=console,
                         prefix=model_name,
-                        verifiers=verifiers,
+                        verifier_defs=verifier_defs,
                         run_context=run_context,
                     )
                     run_context.add_observer(observer)
@@ -493,8 +493,8 @@ async def run_benchmark_plain(
                     result = await agent.run(task, max_steps=max_steps, run_context=run_context)
                     
                     # Run verification separately (CLI orchestrates this)
-                    verifier_runner = VerifierRunner()
-                    verifier_results = await verifier_runner.run_verifiers(verifiers, run_context)
+                    verifier_runner = VerifierRunner(verifier_defs, run_context)
+                    verifier_results = await verifier_runner.run_verifiers()
                     
                     # Enrich result with verifier results
                     result.verifier_results = verifier_results
@@ -745,19 +745,19 @@ async def run_single_task(
                 tool_call_limit=tool_call_limit,
             )
 
-            # Convert to Task and extract verifiers separately
-            task, verifiers = scenario_to_task(scenario, [mcp_config])
+            # Convert to Task and extract verifier definitions separately
+            task, verifier_defs = scenario_to_task(scenario, [mcp_config])
 
             # Create RunContext with Textual observer
             run_context = RunContext(
                 sql_runner_url=sql_runner_url,
             )
 
-            # Add Textual observer for UI display (with optional verifiers)
+            # Add Textual observer for UI display (with optional verifier definitions)
             observer = TextualObserver(
                 queue=queue,
                 width=100,
-                verifiers=verifiers,
+                verifier_defs=verifier_defs,
                 run_context=run_context,
             )
             run_context.add_observer(observer)
@@ -769,8 +769,8 @@ async def run_single_task(
             result = await agent.run(task, max_steps=max_steps, run_context=run_context)
 
             # Run verification separately (CLI orchestrates this)
-            verifier_runner = VerifierRunner()
-            verifier_results = await verifier_runner.run_verifiers(verifiers, run_context)
+            verifier_runner = VerifierRunner(verifier_defs, run_context)
+            verifier_results = await verifier_runner.run_verifiers()
 
             # Enrich result with verifier results
             result.verifier_results = verifier_results

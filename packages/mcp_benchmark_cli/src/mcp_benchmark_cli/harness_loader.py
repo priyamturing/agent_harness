@@ -101,11 +101,15 @@ def scenario_to_task(
     scenario: Scenario,
     mcps: list[MCPConfig],
     database_id: Optional[str] = None,
-) -> tuple[Task, list[Verifier]]:
-    """Convert Scenario to SDK Task and verifiers separately.
+) -> tuple[Task, list[VerifierDefinition]]:
+    """Convert Scenario to SDK Task and verifier definitions.
     
     This function decouples verification from task execution,
     allowing CLI orchestrators to control when and how verification happens.
+    
+    Returns verifier definitions instead of instantiated verifiers since
+    verifiers need runtime context (sql_runner_url, database_id, http_client)
+    which is only available during execution.
 
     Args:
         scenario: Scenario from harness file
@@ -113,16 +117,14 @@ def scenario_to_task(
         database_id: Optional database ID for isolation
 
     Returns:
-        Tuple of (Task, list of Verifiers) for independent orchestration
+        Tuple of (Task, list of VerifierDefinitions) for independent orchestration
     """
-    # Collect all verifiers from all prompts
-    sdk_verifiers: list[Verifier] = []
+    # Collect all verifier definitions from all prompts
+    verifier_defs: list[VerifierDefinition] = []
 
     for prompt in scenario.prompts:
         for verifier_def in prompt.verifiers:
-            # This will raise ValueError if verifier is invalid
-            sdk_verifier = _create_verifier_from_definition(verifier_def)
-            sdk_verifiers.append(sdk_verifier)
+            verifier_defs.append(verifier_def)
 
     # Build prompt text
     # If conversation_mode, merge all prompts; otherwise use first
@@ -145,14 +147,22 @@ def scenario_to_task(
         conversation_mode=scenario.conversation_mode,
     )
     
-    return task, sdk_verifiers
+    return task, verifier_defs
 
 
-def _create_verifier_from_definition(verifier_def: VerifierDefinition) -> Verifier:
+def _create_verifier_from_definition(
+    verifier_def: VerifierDefinition,
+    sql_runner_url: str,
+    database_id: str,
+    http_client: Any,
+) -> Verifier:
     """Create SDK Verifier from harness definition.
 
     Args:
         verifier_def: Verifier definition from harness
+        sql_runner_url: SQL runner endpoint URL
+        database_id: Database ID for isolation
+        http_client: HTTP client for making requests
 
     Returns:
         Verifier instance
@@ -175,11 +185,13 @@ def _create_verifier_from_definition(verifier_def: VerifierDefinition) -> Verifi
         return DatabaseVerifier(
             query=query,
             expected_value=expected_value,
+            sql_runner_url=sql_runner_url,
+            database_id=database_id,
             comparison=comparison,
             name=verifier_def.name,
+            http_client=http_client,
         )
 
-    # Unsupported verifier type - fail fast
     raise ValueError(
         f"Unsupported verifier type: '{verifier_def.verifier_type}'. "
         f"Supported types: database_state"
