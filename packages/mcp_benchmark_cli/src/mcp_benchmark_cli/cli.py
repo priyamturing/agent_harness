@@ -275,66 +275,6 @@ async def run_benchmark_batched(
         )
 
 
-async def run_benchmark(
-    harness_path: Path,
-    models: list[str],
-    temperature: float,
-    max_output_tokens: Optional[int],
-    runs: int,
-    ui_mode: str,
-    mcp_url: Optional[str],
-    sql_runner_url: str,
-    max_steps: int,
-    max_concurrent_runs: int,
-    tool_call_limit: int,
-) -> None:
-    """Run benchmarks asynchronously.
-
-    Args:
-        harness_path: Path to harness JSON file
-        models: List of model names
-        temperature: Sampling temperature
-        max_output_tokens: Maximum output tokens
-        runs: Number of parallel runs
-        ui_mode: UI mode (auto, plain, textual)
-        mcp_url: Optional MCP URL override
-        sql_runner_url: SQL runner endpoint
-        max_steps: Maximum agent steps
-        max_concurrent_runs: Maximum concurrent runs
-        tool_call_limit: Maximum tool calls per run
-    """
-    # Determine UI mode
-    use_textual = ui_mode == "textual" or (ui_mode == "auto" and runs > 1)
-    
-    if use_textual:
-        # Use Textual UI for parallel runs
-        await run_benchmark_textual(
-            harness_path=harness_path,
-            models=models,
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,
-            runs=runs,
-            mcp_url=mcp_url,
-            sql_runner_url=sql_runner_url,
-            max_steps=max_steps,
-            max_concurrent_runs=max_concurrent_runs,
-            tool_call_limit=tool_call_limit,
-        )
-    else:
-        # Use plain console mode
-        await run_benchmark_plain(
-            harness_path=harness_path,
-            models=models,
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,
-            runs=runs,
-            mcp_url=mcp_url,
-            sql_runner_url=sql_runner_url,
-            max_steps=max_steps,
-            tool_call_limit=tool_call_limit,
-        )
-
-
 async def run_all_plain(
     run_configs: list[dict],
     session_dir: Path,

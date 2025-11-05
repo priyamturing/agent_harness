@@ -98,7 +98,7 @@ class GPTAgent(Agent):
             include.add("reasoning.encrypted_content")
             config["include"] = sorted(include)
 
-        # Use Responses API for reasoning models
+        # Use Responses API for all models (most OpenAI models support it)
         config["output_version"] = "responses/v1"
         config["use_responses_api"] = True
 

@@ -7,6 +7,7 @@ import json
 import textwrap
 from abc import ABC, abstractmethod
 from typing import Any, Optional
+from uuid import uuid4
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
@@ -151,6 +152,18 @@ class Agent(ABC):
         results: list[ToolResult] = []
 
         for tc in tool_calls:
+            # Generate unique ID if LLM didn't provide one
+            if tc.id is None:
+                generated_id = f"{tc.name}_{uuid4().hex[:8]}"
+                if self._run_context:
+                    await self._run_context.notify_status(
+                        f"⚠️  Tool call '{tc.name}' missing ID - generated: {generated_id}",
+                        "warning"
+                    )
+                tool_call_id = generated_id
+            else:
+                tool_call_id = tc.id
+            
             tool = self._tool_map.get(tc.name)
 
             if tool is None:
@@ -158,7 +171,7 @@ class Agent(ABC):
                 results.append(
                     ToolResult(
                         content=error_msg,
-                        tool_call_id=tc.id or tc.name,
+                        tool_call_id=tool_call_id,
                         is_error=True,
                     )
                 )
@@ -178,16 +191,23 @@ class Agent(ABC):
 
                 # Serialize output
                 serialized = self._serialize_tool_output(output)
-                content_str = (
-                    json.dumps(serialized, ensure_ascii=False)
-                    if isinstance(serialized, (dict, list))
-                    else str(serialized)
-                )
+                
+                # MCP protocol requires JSON-serializable responses
+                # If serialization fails, it's a protocol violation by the MCP server
+                try:
+                    content_str = json.dumps(serialized, ensure_ascii=False)
+                except TypeError as e:
+                    raise TypeError(
+                        f"Tool '{tc.name}' returned non-JSON-serializable data. "
+                        f"MCP servers must return JSON-compatible types. "
+                        f"Received type: {type(serialized).__name__}. "
+                        f"Original error: {e}"
+                    ) from e
 
                 results.append(
                     ToolResult(
                         content=content_str,
-                        tool_call_id=tc.id or tc.name,
+                        tool_call_id=tool_call_id,
                         is_error=False,
                         structured_content=serialized if isinstance(serialized, dict) else None,
                     )
@@ -203,7 +223,7 @@ class Agent(ABC):
                 results.append(
                     ToolResult(
                         content=error_msg,
-                        tool_call_id=tc.id or tc.name,
+                        tool_call_id=tool_call_id,
                         is_error=True,
                     )
                 )
@@ -290,9 +310,59 @@ class Agent(ABC):
         return messages
 
     async def cleanup(self) -> None:
-        """Cleanup resources (MCP connections, etc.)."""
+        """Cleanup resources (MCP connections, LLM clients, etc.).
+        
+        Performs defensive cleanup of all agent resources:
+        - MCP client connections
+        - LangChain LLM clients (if they support cleanup)
+        
+        This method is safe to call multiple times and will attempt
+        cleanup even if resources don't explicitly support it.
+        """
+        # Clean MCP connections
         if self._mcp_manager:
             await self._mcp_manager.cleanup()
+        
+        # Defensive cleanup of LLM resources
+        # Different LangChain providers may or may not have cleanup methods
+        if self._llm:
+            # Strategy 1: Check for async close method (most common)
+            if hasattr(self._llm, 'aclose'):
+                try:
+                    await self._llm.aclose()  # type: ignore[attr-defined]
+                except Exception:
+                    pass  # Ignore cleanup errors
+            
+            # Strategy 2: Check for sync close method
+            elif hasattr(self._llm, 'close'):
+                try:
+                    self._llm.close()  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            
+            # Strategy 3: Check for async context manager exit
+            elif hasattr(self._llm, '__aexit__'):
+                try:
+                    await self._llm.__aexit__(None, None, None)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            
+            # Strategy 4: Direct access to internal httpx async client (ChatOpenAI, etc.)
+            elif hasattr(self._llm, 'async_client') and hasattr(self._llm.async_client, 'aclose'):  # type: ignore[attr-defined]
+                try:
+                    await self._llm.async_client.aclose()  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            
+            # Strategy 5: Direct access to sync client
+            elif hasattr(self._llm, 'client') and hasattr(self._llm.client, 'close'):  # type: ignore[attr-defined]
+                try:
+                    self._llm.client.close()  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            
+            # If none of the above work, rely on garbage collection
+            # This is fine for most modern LangChain versions
 
     # ============ Internal (overridable for full control) ============
 
@@ -385,7 +455,6 @@ class Agent(ABC):
                 tool_messages = self.format_tool_results(response.tool_calls, tool_results)
                 messages.extend(tool_messages)
 
-                # Run verifiers after tool calls
                 await self.run_verifiers()
 
         # Max steps reached

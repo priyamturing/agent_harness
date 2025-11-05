@@ -89,6 +89,10 @@ class RunDetailScreen(Screen):
         border: solid $secondary;
         padding: 1;
     }
+    
+    #detail_verifier_table {
+        width: 100%;
+    }
     """
 
     BINDINGS = [
@@ -97,19 +101,19 @@ class RunDetailScreen(Screen):
         ("q", "quit", "Quit"),
     ]
 
-    def __init__(self, run_label: str, run_queue: asyncio.Queue, run_status: Dict[str, Any]):
+    def __init__(self, run_label: str, run_messages: list[Union[str, dict]], run_status: Dict[str, Any]):
         """Initialize detail screen.
         
         Args:
             run_label: Label of the run to display
-            run_queue: Queue with run's messages
-            run_status: Status dict for the run
+            run_messages: List of messages (shared with parent, updates live)
+            run_status: Status dict for the run (shared with parent, updates live)
         """
         super().__init__()
         self.run_label = run_label
-        self.run_queue = run_queue
+        self.run_messages = run_messages  # Reference to parent's message list
         self.run_status = run_status
-        self._message_buffer: list[str] = []  # Store all messages
+        self._last_message_count = 0  # Track how many messages we've displayed
 
     def compose(self) -> ComposeResult:
         """Compose detail screen UI."""
@@ -170,18 +174,17 @@ class RunDetailScreen(Screen):
         
         status_label.update(" | ".join(status_parts))
         
-        # Drain queue and update log
+        # Process new messages from shared list
         log_widget = self.query_one("#detail_richlog", RichLog)
+        current_message_count = len(self.run_messages)
         
-        message_count = 0
-        while message_count < 50:  # Process more messages for detail view
-            try:
-                message: Union[str, dict] = self.run_queue.get_nowait()
-                message_count += 1
-                
+        # Only process messages we haven't seen yet
+        if current_message_count > self._last_message_count:
+            new_messages = self.run_messages[self._last_message_count:current_message_count]
+            
+            for message in new_messages:
                 if isinstance(message, str):
-                    # Add to buffer and display
-                    self._message_buffer.append(message)
+                    # Display string message
                     log_widget.write(message)
                 
                 elif isinstance(message, dict) and message.get("type") == "status":
@@ -204,9 +207,9 @@ class RunDetailScreen(Screen):
                             row["actual"],
                             error_text,
                         )
-                
-            except QueueEmpty:
-                break
+            
+            # Update counter
+            self._last_message_count = current_message_count
 
     def action_back(self) -> None:
         """Go back to dashboard."""
@@ -240,6 +243,10 @@ class DashboardScreen(Screen):
         padding: 1;
     }
     
+    #status_table {
+        width: 100%;
+    }
+    
     #recent_log {
         height: 15;
         border: solid $secondary;
@@ -254,7 +261,6 @@ class DashboardScreen(Screen):
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("r", "refresh", "Refresh"),
-        ("enter", "view_selected", "View Details"),
     ]
 
     def __init__(
@@ -263,12 +269,14 @@ class DashboardScreen(Screen):
         run_status: Dict[str, Dict[str, Any]],
         global_log_queue: asyncio.Queue,
         run_queues: Dict[str, asyncio.Queue],
+        run_messages: Dict[str, list[Union[str, dict]]],
     ):
         super().__init__()
         self.total_runs = total_runs
         self.run_status = run_status
         self.global_log_queue = global_log_queue
         self.run_queues = run_queues
+        self._run_messages = run_messages
         self.start_time = datetime.now()
         self._run_labels_order: list[str] = []  # Track order of runs in table
 
@@ -278,8 +286,8 @@ class DashboardScreen(Screen):
         
         with Container(id="stats_container"):
             yield Label("[bold cyan]Benchmark Dashboard[/bold cyan]", id="title")
-            yield Label("", id="stats_summary")
-            yield Label("", id="timing_info")
+            yield Label("Initializing...", id="stats_summary")
+            yield Label("Elapsed: 00:00", id="timing_info")
         
         with Container(id="progress_container"):
             yield Label("Overall Progress", classes="stat_label")
@@ -298,9 +306,21 @@ class DashboardScreen(Screen):
     def on_mount(self) -> None:
         """Setup table and start updates."""
         table = self.query_one("#status_table", DataTable)
-        table.add_columns("Status", "Model", "Scenario", "Run", "Started", "Progress")
+        table.add_columns("Status", "Harness", "Model", "Scenario", "Run", "Started", "Progress")
         table.cursor_type = "row"  # Enable row selection
         table.focus()  # Focus table for keyboard navigation
+        
+        # Log dashboard initialization
+        try:
+            self.global_log_queue.put_nowait(
+                f"[dim]{datetime.now().strftime('%H:%M:%S')}[/dim] "
+                f"[cyan]Dashboard initialized - monitoring {self.total_runs} runs[/cyan]"
+            )
+        except:
+            pass
+        
+        # Initial update to show starting state
+        self.update_display()
         
         # Start periodic updates
         self.set_interval(0.5, self.update_display)
@@ -321,94 +341,129 @@ class DashboardScreen(Screen):
 
     def update_display(self) -> None:
         """Update dashboard with current status."""
-        # Count statuses
-        completed = sum(1 for s in self.run_status.values() if s.get("status") == "completed")
-        running = sum(1 for s in self.run_status.values() if s.get("status") == "running")
-        queued = sum(1 for s in self.run_status.values() if s.get("status") == "queued")
-        failed = sum(1 for s in self.run_status.values() if not s.get("success", True) and s.get("status") == "completed")
-        
-        # Update summary labels
-        stats_label = self.query_one("#stats_summary", Label)
-        stats_label.update(
-            f"[green]Completed: {completed}[/green]  "
-            f"[yellow]Running: {running}[/yellow]  "
-            f"[cyan]Queued: {queued}[/cyan]  "
-            f"[red]Failed: {failed}[/red]"
-        )
-        
-        # Update timing
-        elapsed = (datetime.now() - self.start_time).total_seconds()
-        timing_label = self.query_one("#timing_info", Label)
-        timing_label.update(f"Elapsed: {self._format_time(elapsed)}")
-        
-        # Update progress bar
-        progress = self.query_one("#overall_progress", ProgressBar)
-        progress.update(progress=completed)
-        
-        # Update status table - show running and recent
-        table = self.query_one("#status_table", DataTable)
-        
-        # Save cursor position
-        current_cursor = table.cursor_row if table.cursor_row is not None else 0
-        
-        table.clear()
-        
-        # Sort: running first, then queued, then recently completed
-        sorted_runs = sorted(
-            self.run_status.items(),
-            key=lambda x: (
-                0 if x[1].get("status") == "running" else
-                1 if x[1].get("status") == "queued" else 2,
-                x[1].get("start_time", "")
-            ),
-            reverse=False
-        )
-        
-        # Track order for selection
-        self._run_labels_order = []
-        
-        # Show up to 20 most relevant runs
-        for label, status in sorted_runs[:20]:
-            self._run_labels_order.append(label)
-            run_status = status.get("status", "unknown")
+        try:
+            # Count statuses (successful vs failed, not overlapping)
+            successful = sum(1 for s in self.run_status.values() 
+                            if s.get("status") == "completed" and s.get("success", False))
+            failed = sum(1 for s in self.run_status.values() 
+                        if s.get("status") == "completed" and not s.get("success", True))
+            running = sum(1 for s in self.run_status.values() if s.get("status") == "running")
+            queued = sum(1 for s in self.run_status.values() if s.get("status") == "queued")
             
-            # Status icon
-            if run_status == "completed":
-                if status.get("success", True):
-                    status_text = Text("✓ Done", style="green")
-                else:
-                    status_text = Text("✗ Failed", style="red")
-            elif run_status == "running":
-                status_text = Text("▶ Running", style="yellow bold")
-            elif run_status == "queued":
-                status_text = Text("⏸ Queued", style="cyan")
-            else:
-                status_text = Text("? Unknown", style="dim")
-            
-            # Parse label to extract model, scenario, run
-            parts = label.split("_")
-            model = parts[0] if len(parts) > 0 else ""
-            scenario = parts[1] if len(parts) > 1 else ""
-            run_num = parts[-1] if len(parts) > 2 else ""
-            
-            start_time = status.get("start_time", "")
-            if start_time:
-                start_time = start_time.split("T")[1][:8] if "T" in start_time else start_time[:8]
-            
-            progress_text = status.get("progress", "")
-            
-            table.add_row(
-                status_text,
-                model[:15],
-                scenario[:20],
-                run_num,
-                start_time,
-                progress_text[:30],
+            # Update summary labels
+            stats_label = self.query_one("#stats_summary", Label)
+            stats_label.update(
+                f"[green]Successful: {successful}[/green]  "
+                f"[red]Failed: {failed}[/red]  "
+                f"[yellow]Running: {running}[/yellow]  "
+                f"[cyan]Queued: {queued}[/cyan]"
             )
-        
-        # Restore cursor position (clamped to valid range)
-        if len(self._run_labels_order) > 0:
-            table.move_cursor(row=min(current_cursor, len(self._run_labels_order) - 1))
+            
+            # Update timing
+            elapsed = (datetime.now() - self.start_time).total_seconds()
+            timing_label = self.query_one("#timing_info", Label)
+            timing_label.update(f"Elapsed: {self._format_time(elapsed)}")
+            
+            # Update progress bar (total finished = successful + failed)
+            progress = self.query_one("#overall_progress", ProgressBar)
+            total_finished = successful + failed
+            progress.update(progress=total_finished)
+            
+            # Update status table - show running and recent
+            table = self.query_one("#status_table", DataTable)
+            
+            # Save cursor position
+            current_cursor = table.cursor_row if table.cursor_row is not None else 0
+            
+            table.clear()
+            
+            # Sort: running first, then queued, then recently completed
+            sorted_runs = sorted(
+                self.run_status.items(),
+                key=lambda x: (
+                    0 if x[1].get("status") == "running" else
+                    1 if x[1].get("status") == "queued" else 2,
+                    x[1].get("start_time", "")
+                ),
+                reverse=False
+            )
+            
+            # Track order for selection
+            self._run_labels_order = []
+            
+            # Show up to 20 most relevant runs
+            for label, status in sorted_runs[:20]:
+                self._run_labels_order.append(label)
+                run_status = status.get("status", "unknown")
+                
+                # Status icon
+                if run_status == "completed":
+                    if status.get("success", True):
+                        status_text = Text("✓ Done", style="green")
+                    else:
+                        status_text = Text("✗ Failed", style="red")
+                elif run_status == "running":
+                    status_text = Text("▶ Running", style="yellow bold")
+                elif run_status == "queued":
+                    status_text = Text("⏸ Queued", style="cyan")
+                else:
+                    status_text = Text("? Unknown", style="dim")
+                
+                # Parse label to extract harness, model, scenario, run
+                # Label format: {model}_{harness}_{scenario}_r{num} or {model}_{scenario}_r{num}
+                parts = label.split("_")
+                model = parts[0] if len(parts) > 0 else ""
+                
+                # Check if last part is run number (starts with 'r')
+                has_run_num = len(parts) > 0 and parts[-1].startswith("r") and parts[-1][1:].isdigit()
+                run_num = parts[-1] if has_run_num else ""
+                
+                # Determine if we have harness name (multiple files scenario)
+                # If 4+ parts with run_num or 3+ parts without run_num, we have harness
+                end_idx = -1 if has_run_num else len(parts)
+                middle_parts = parts[1:end_idx]
+                
+                if len(middle_parts) >= 2:
+                    # Has harness: first middle part is harness, rest is scenario
+                    harness = middle_parts[0]
+                    scenario = "_".join(middle_parts[1:])
+                elif len(middle_parts) == 1:
+                    # No harness: just scenario
+                    harness = "-"
+                    scenario = middle_parts[0]
+                else:
+                    harness = "-"
+                    scenario = ""
+                
+                start_time = status.get("start_time", "")
+                if start_time:
+                    start_time = start_time.split("T")[1][:8] if "T" in start_time else start_time[:8]
+                
+                progress_text = status.get("progress", "")
+                
+                table.add_row(
+                    status_text,
+                    harness[:20],
+                    model[:12],
+                    scenario[:25],
+                    run_num,
+                    start_time,
+                    progress_text[:30],
+                )
+            
+            # Restore cursor position (clamped to valid range)
+            if len(self._run_labels_order) > 0:
+                table.move_cursor(row=min(current_cursor, len(self._run_labels_order) - 1))
+                
+        except Exception as e:
+            # Log error to activity log for debugging
+            try:
+                self.global_log_queue.put_nowait(
+                    f"[dim]{datetime.now().strftime('%H:%M:%S')}[/dim] "
+                    f"[red]Dashboard update error: {e}[/red]"
+                )
+            except:
+                pass  # Even logging failed, give up silently
     
     def on_screen_resume(self) -> None:
         """Called when screen is resumed (e.g., after popping detail screen)."""
@@ -416,18 +471,19 @@ class DashboardScreen(Screen):
         table = self.query_one("#status_table", DataTable)
         table.focus()
     
-    def action_view_selected(self) -> None:
-        """View detailed logs for selected run."""
-        table = self.query_one("#status_table", DataTable)
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Handle row selection (Enter key on a row)."""
+        # Get the row index
+        row_index = event.cursor_row
         
-        # Get cursor position
-        if table.cursor_row is not None and table.cursor_row < len(self._run_labels_order):
-            selected_label = self._run_labels_order[table.cursor_row]
+        # Check if we have a valid selection
+        if row_index is not None and row_index < len(self._run_labels_order):
+            selected_label = self._run_labels_order[row_index]
             
-            # Create and show detail screen
+            # Create and show detail screen with stored messages
             detail_screen = RunDetailScreen(
                 run_label=selected_label,
-                run_queue=self.run_queues[selected_label],
+                run_messages=self._run_messages[selected_label],
                 run_status=self.run_status[selected_label],
             )
             self.app.push_screen(detail_screen)
@@ -458,9 +514,6 @@ class MultiRunApp(App[None]):
     }
     RichLog {
         height: 1fr;
-    }
-    DataTable {
-        width: 48;
     }
     """
 
@@ -499,6 +552,11 @@ class MultiRunApp(App[None]):
             for label in run_labels
         }
         self._global_log_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
+        
+        # Store all messages for each run so detail view can access them
+        self._run_messages: Dict[str, list[Union[str, dict]]] = {
+            label: [] for label in run_labels
+        }
         
         super().__init__()
 
@@ -577,6 +635,7 @@ class MultiRunApp(App[None]):
             run_status=self._run_status,
             global_log_queue=self._global_log_queue,
             run_queues=self._queues,
+            run_messages=self._run_messages,
         )
         self.push_screen(dashboard)
         
@@ -597,6 +656,9 @@ class MultiRunApp(App[None]):
                 except QueueEmpty:
                     break
                 else:
+                    # Store message for detail view
+                    self._run_messages[label].append(message)
+                    
                     # Process message and extract status information
                     if isinstance(message, str):
                         # Parse string messages for status keywords

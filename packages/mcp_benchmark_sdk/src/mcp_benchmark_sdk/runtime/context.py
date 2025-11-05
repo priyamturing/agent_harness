@@ -20,6 +20,13 @@ class RunContext:
     - SQL runner URL for verifiers
     - Shared HTTP client
     - Event observers for logging/telemetry
+    
+    Can be used as an async context manager for automatic cleanup:
+    ```python
+    async with RunContext(sql_runner_url=url) as ctx:
+        # Resources are automatically cleaned up on exit
+        await agent.run(task, run_context=ctx)
+    ```
     """
 
     database_id: str = field(default_factory=lambda: str(uuid4()))
@@ -78,4 +85,12 @@ class RunContext:
         if self.http_client is not None:
             await self.http_client.aclose()
             self.http_client = None
+    
+    async def __aenter__(self) -> "RunContext":
+        """Enter async context manager."""
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Exit async context manager, ensuring cleanup."""
+        await self.cleanup()
 

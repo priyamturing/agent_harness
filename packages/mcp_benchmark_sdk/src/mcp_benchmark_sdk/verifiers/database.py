@@ -42,8 +42,8 @@ def _compare(actual: Any, expected: Any, comparison: str | None) -> bool:
     - equals / eq / == : exact equality (works with None)
     - greater_than / gt / > : actual > expected (requires non-None values)
     - less_than / lt / < : actual < expected (requires non-None values)
-    - greater_than_equal / gte / >= : actual >= expected (requires non-None values)
-    - less_than_equal / lte / <= : actual <= expected (requires non-None values)
+    - greater_than_equal / greater_than_or_equal / greater_than_or_equal_to / gte / >= : actual >= expected (requires non-None values)
+    - less_than_equal / less_than_or_equal / less_than_or_equal_to / lte / <= : actual <= expected (requires non-None values)
     
     Raises:
         ValueError: If comparison type is unsupported
@@ -76,11 +76,11 @@ def _compare(actual: Any, expected: Any, comparison: str | None) -> bool:
             return actual < expected
         
         # Greater than or equal
-        elif comparison in ("greater_than_equal", "gte", ">=", "greater_or_equal"):
+        elif comparison in ("greater_than_equal", "greater_than_or_equal", "greater_than_or_equal_to", "gte", ">=", "greater_or_equal"):
             return actual >= expected
         
         # Less than or equal
-        elif comparison in ("less_than_equal", "lte", "<=", "less_or_equal"):
+        elif comparison in ("less_than_equal", "less_than_or_equal", "less_than_or_equal_to", "lte", "<=", "less_or_equal"):
             return actual <= expected
     except TypeError as e:
         raise TypeError(
@@ -93,7 +93,8 @@ def _compare(actual: Any, expected: Any, comparison: str | None) -> bool:
         raise ValueError(
             f"Unsupported comparison type: '{comparison}'. "
             f"Supported: equals/eq/==, greater_than/gt/>, less_than/lt/<, "
-            f"greater_than_equal/gte/>=, less_than_equal/lte/<="
+            f"greater_than_equal/greater_than_or_equal/greater_than_or_equal_to/gte/>=, "
+            f"less_than_equal/less_than_or_equal/less_than_or_equal_to/lte/<="
         )
 
 
@@ -107,8 +108,8 @@ class DatabaseVerifier(Verifier):
     - equals / eq / == : exact equality (actual == expected)
     - greater_than / gt / > : actual > expected
     - less_than / lt / < : actual < expected
-    - greater_than_equal / gte / >= : actual >= expected
-    - less_than_equal / lte / <= : actual <= expected
+    - greater_than_equal / greater_than_or_equal / greater_than_or_equal_to / gte / >= : actual >= expected
+    - less_than_equal / less_than_or_equal / less_than_or_equal_to / lte / <= : actual <= expected
     """
 
     def __init__(
@@ -127,8 +128,8 @@ class DatabaseVerifier(Verifier):
                 - equals, eq, ==
                 - greater_than, gt, >
                 - less_than, lt, <
-                - greater_than_equal, gte, >=
-                - less_than_equal, lte, <=
+                - greater_than_equal, greater_than_or_equal, greater_than_or_equal_to, gte, >=
+                - less_than_equal, less_than_or_equal, less_than_or_equal_to, lte, <=
             name: Optional display name
             
         Raises:

@@ -117,9 +117,9 @@ def scenario_to_task(
 
     for prompt in scenario.prompts:
         for verifier_def in prompt.verifiers:
+            # This will raise ValueError if verifier is invalid
             sdk_verifier = _create_verifier_from_definition(verifier_def)
-            if sdk_verifier:
-                sdk_verifiers.append(sdk_verifier)
+            sdk_verifiers.append(sdk_verifier)
 
     # Build prompt text
     # If conversation_mode, merge all prompts; otherwise use first
@@ -144,14 +144,17 @@ def scenario_to_task(
     )
 
 
-def _create_verifier_from_definition(verifier_def: VerifierDefinition) -> Verifier | None:
+def _create_verifier_from_definition(verifier_def: VerifierDefinition) -> Verifier:
     """Create SDK Verifier from harness definition.
 
     Args:
         verifier_def: Verifier definition from harness
 
     Returns:
-        Verifier instance or None if unsupported type
+        Verifier instance
+
+    Raises:
+        ValueError: If verifier type is unsupported or config is invalid
     """
     if verifier_def.verifier_type == "database_state":
         config = verifier_def.validation_config
@@ -160,7 +163,10 @@ def _create_verifier_from_definition(verifier_def: VerifierDefinition) -> Verifi
         comparison = config.get("comparison_type", "equals")
 
         if not query:
-            return None
+            raise ValueError(
+                f"Verifier '{verifier_def.name or 'unnamed'}': "
+                f"database_state verifier requires 'query' in validation_config"
+            )
 
         return DatabaseVerifier(
             query=query,
@@ -169,8 +175,11 @@ def _create_verifier_from_definition(verifier_def: VerifierDefinition) -> Verifi
             name=verifier_def.name,
         )
 
-    # Future: Support other verifier types
-    return None
+    # Unsupported verifier type - fail fast
+    raise ValueError(
+        f"Unsupported verifier type: '{verifier_def.verifier_type}'. "
+        f"Supported types: database_state"
+    )
 
 
 __all__ = ["load_harness_file", "scenario_to_task"]

@@ -114,22 +114,8 @@ class QwenAgent(Agent):
         if self.max_output_tokens is not None:
             config["max_completion_tokens"] = self.max_output_tokens
 
-        # Filter out parameters that Qwen doesn't support
-        # Note: system_prompt is handled as an explicit parameter, not in kwargs
-        filtered_kwargs = {
-            k: v for k, v in self.extra_kwargs.items()
-            if k not in {
-                "reasoning_effort",
-                "include",
-                "output_version",
-                "use_responses_api",
-                "thinking",
-                "thinking_budget",
-                "enable_thinking",
-            }
-        }
-        
-        config.update(filtered_kwargs)
+        # Pass through any additional kwargs - let the API fail if they're unsupported
+        config.update(self.extra_kwargs)
         
         # Note: Qwen's thinking/reasoning requires streaming mode which we don't use
         # For non-streaming mode, explicitly disable thinking in the request body

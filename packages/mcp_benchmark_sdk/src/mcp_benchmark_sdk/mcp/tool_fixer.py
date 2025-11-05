@@ -75,6 +75,9 @@ def fix_tool_schemas(tools: list[BaseTool]) -> list[BaseTool]:
             name: str = tool.name
             description: str = tool.description
             args_schema: type[BaseModel] = new_schema
+            # Store field mapping and original tool to avoid closure variable capture bug
+            _field_mapping: dict[str, str] = field_mapping
+            _original_tool: BaseTool = tool
 
             async def _arun(self, **kwargs: Any) -> Any:
                 # Reverse the field mapping for the actual tool call
@@ -82,30 +85,30 @@ def fix_tool_schemas(tools: list[BaseTool]) -> list[BaseTool]:
                 for key, value in kwargs.items():
                     # Find original name
                     original_name = None
-                    for orig, new in field_mapping.items():
+                    for orig, new in self._field_mapping.items():
                         if new == key:
                             original_name = orig
                             break
                     original_kwargs[original_name or key] = value
 
                 # Call original tool
-                if hasattr(tool, "ainvoke"):
-                    return await tool.ainvoke(original_kwargs)
+                if hasattr(self._original_tool, "ainvoke"):
+                    return await self._original_tool.ainvoke(original_kwargs)
                 else:
-                    return tool.invoke(original_kwargs)
+                    return self._original_tool.invoke(original_kwargs)
 
             def _run(self, **kwargs: Any) -> Any:
                 # Reverse the field mapping
                 original_kwargs = {}
                 for key, value in kwargs.items():
                     original_name = None
-                    for orig, new in field_mapping.items():
+                    for orig, new in self._field_mapping.items():
                         if new == key:
                             original_name = orig
                             break
                     original_kwargs[original_name or key] = value
 
-                return tool.invoke(original_kwargs)
+                return self._original_tool.invoke(original_kwargs)
 
         fixed_tool = FixedTool()
         fixed_tools.append(fixed_tool)
