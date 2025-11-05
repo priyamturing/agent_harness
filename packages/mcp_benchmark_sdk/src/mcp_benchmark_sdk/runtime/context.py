@@ -66,11 +66,6 @@ class RunContext:
         for observer in self.observers:
             await observer.on_tool_call(tool_name, arguments, result, is_error)
 
-    async def notify_verifier_update(self, verifier_results: list[Any]) -> None:
-        """Notify observers of verifier results."""
-        for observer in self.observers:
-            await observer.on_verifier_update(verifier_results)
-
     async def notify_status(self, message: str, level: str = "info") -> None:
         """Notify observers of status updates."""
         for observer in self.observers:

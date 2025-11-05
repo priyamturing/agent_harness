@@ -18,7 +18,6 @@ from ..parsers import ParsedResponse, ResponseParser
 from ..runtime import RunContext
 from ..tasks import AgentResponse, Result, Task, ToolCall, ToolResult
 from ..utils import retry_with_backoff
-from ..verifiers import VerifierResult, execute_verifiers
 
 # Default timeout for LLM API calls (10 minutes)
 _DEFAULT_LLM_TIMEOUT_SECONDS = 600.0
@@ -279,30 +278,6 @@ class Agent(ABC):
         """
         return self._tools
 
-    async def run_verifiers(self) -> list[VerifierResult]:
-        """Execute verifiers on current state.
-
-        Returns:
-            List of verifier results
-        """
-        if not self._task or not self._task.verifiers:
-            return []
-
-        if not self._run_context or not self._run_context.sql_runner_url:
-            return []
-
-        results = await execute_verifiers(
-            self._task.verifiers,
-            self._run_context.sql_runner_url,
-            self._run_context.database_id,
-            self._run_context.get_http_client(),
-        )
-
-        if self._run_context:
-            await self._run_context.notify_verifier_update(results)
-
-        return results
-
     def get_initial_messages(self) -> list[BaseMessage]:
         """Build system + task messages.
 
@@ -474,24 +449,14 @@ class Agent(ABC):
             if response.done and not response.tool_calls:
                 await run_context.notify_status("Agent completed", "info")
 
-                # Run final verifiers
-                verifier_results = await self.run_verifiers()
-
-                # Check verifier success
-                all_passed = all(v.success for v in verifier_results) if verifier_results else True
-                error_msg = None
-                if verifier_results and not all_passed:
-                    failed_verifiers = [v.name for v in verifier_results if not v.success]
-                    error_msg = f"Verifier(s) failed: {', '.join(failed_verifiers)}"
-
                 return Result(
-                    success=all_passed,
+                    success=True,
                     messages=messages,
-                    verifier_results=verifier_results,
+                    verifier_results=[],
                     metadata={"steps": step + 1},
                     database_id=run_context.database_id,
                     reasoning_traces=all_reasoning,
-                    error=error_msg,
+                    error=None,
                 )
 
             # Execute tool calls
@@ -499,12 +464,10 @@ class Agent(ABC):
                 if remaining_tool_calls is not None:
                     if remaining_tool_calls < len(response.tool_calls):
                         await run_context.notify_status("Tool call limit reached", "warning")
-                        # Return immediately with correct reason, don't fall through to max_steps
-                        verifier_results = await self.run_verifiers()
                         return Result(
                             success=False,
                             messages=messages,
-                            verifier_results=verifier_results,
+                            verifier_results=[],
                             metadata={"steps": step + 1, "reason": "tool_call_limit_reached"},
                             database_id=run_context.database_id,
                             reasoning_traces=all_reasoning,
@@ -516,16 +479,13 @@ class Agent(ABC):
                 tool_messages = self.format_tool_results(response.tool_calls, tool_results)
                 messages.extend(tool_messages)
 
-                await self.run_verifiers()
-
         # Max steps reached
         await run_context.notify_status("Max steps reached", "warning")
-        verifier_results = await self.run_verifiers()
 
         return Result(
             success=False,
             messages=messages,
-            verifier_results=verifier_results,
+            verifier_results=[],
             metadata={"steps": max_steps, "reason": "max_steps_reached"},
             database_id=run_context.database_id,
             reasoning_traces=all_reasoning,

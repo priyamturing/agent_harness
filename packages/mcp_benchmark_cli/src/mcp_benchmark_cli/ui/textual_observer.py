@@ -4,7 +4,10 @@ import asyncio
 import json
 from typing import Any, Optional
 
-from mcp_benchmark_sdk import RunObserver, VerifierResult
+from mcp_benchmark_sdk import RunContext, RunObserver, VerifierResult
+from mcp_benchmark_sdk.verifiers import Verifier
+
+from ..verifier_runner import VerifierRunner
 
 
 def _json_safe(value: object) -> object:
@@ -26,12 +29,20 @@ class TextualObserver(RunObserver):
     RichLog widget will render the markup.
     """
 
-    def __init__(self, queue: asyncio.Queue, width: int = 100):
+    def __init__(
+        self,
+        queue: asyncio.Queue,
+        width: int = 100,
+        verifiers: Optional[list[Verifier]] = None,
+        run_context: Optional[RunContext] = None,
+    ):
         """Initialize textual observer.
 
         Args:
             queue: Queue to send messages to Textual app
             width: Console width (not used, kept for compatibility)
+            verifiers: Optional list of verifiers to run after each tool call
+            run_context: Optional runtime context for running verifiers
         """
         self._queue = queue
         self._artifacts: dict[str, list] = {
@@ -42,6 +53,11 @@ class TextualObserver(RunObserver):
         }
         self._drop_count = 0
         self._last_drop_warning = 0
+        
+        # Verification support (optional)
+        self.verifiers = verifiers or []
+        self.run_context = run_context
+        self.verifier_runner = VerifierRunner() if verifiers else None
 
     def _enqueue(self, text: str) -> None:
         """Send text directly to queue (RichLog handles markup)."""
@@ -104,7 +120,7 @@ class TextualObserver(RunObserver):
         result: Any,
         is_error: bool = False,
     ) -> None:
-        """Log tool call with Rich markup."""
+        """Log tool call with Rich markup and optionally run verifiers."""
         # Add to artifacts
         call_entry = {
             "type": "tool_call",
@@ -141,9 +157,17 @@ class TextualObserver(RunObserver):
             
             self._enqueue(f"[magenta]← Tool response:[/magenta]\n")
             self._enqueue(f"{result_str}\n\n")
+        
+        # Run verifiers if configured (optional)
+        if self.verifiers and self.run_context and not is_error and self.verifier_runner:
+            verifier_results = await self.verifier_runner.run_verifiers(
+                self.verifiers,
+                self.run_context
+            )
+            self._display_verifier_results(verifier_results)
 
-    async def on_verifier_update(self, verifier_results: list[Any]) -> None:
-        """Log verifier results to status table."""
+    def _display_verifier_results(self, verifier_results: list[Any]) -> None:
+        """Display verifier results in the UI."""
         if not verifier_results:
             return
 

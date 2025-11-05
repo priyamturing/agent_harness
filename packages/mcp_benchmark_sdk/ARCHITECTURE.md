@@ -8,6 +8,10 @@ The MCP Benchmark SDK is designed to benchmark LLM agents against MCP (Model Con
 
 ```mermaid
 graph TB
+    subgraph "Orchestration Layer (CLI)"
+        CLI[CLI/Orchestrator]
+    end
+
     subgraph "User Layer"
         USER[User Code]
         TASK[Task Definition]
@@ -42,7 +46,7 @@ graph TB
         XAI_PARSER[XAI Parser]
     end
 
-    subgraph "Verifier Layer"
+    subgraph "Verifier Layer (SDK Utilities)"
         VERIFIER[Verifier Base]
         DB_VERIFIER[DatabaseVerifier]
         EXECUTOR[Verifier Executor]
@@ -61,6 +65,8 @@ graph TB
 
     USER --> TASK
     USER --> AGENT
+    CLI --> AGENT
+    CLI --> EXECUTOR
     
     AGENT --> CLAUDE
     AGENT --> GPT
@@ -74,7 +80,6 @@ graph TB
     
     AGENT --> CONTEXT
     AGENT --> MCP_MANAGER
-    AGENT --> EXECUTOR
     
     CONTEXT --> OBSERVER
     CONTEXT --> EVENTS
@@ -85,7 +90,6 @@ graph TB
     
     TASK --> SCENARIO
     TASK --> MCP_CONFIG
-    TASK --> VERIFIER
     
     VERIFIER --> DB_VERIFIER
     EXECUTOR --> VERIFIER
@@ -123,7 +127,7 @@ The core abstraction for LLM agents with a multi-level API:
 - LLM interaction
 - Tool call management
 - Message history tracking
-- Result generation
+- Result generation (without verification)
 
 ### 2. Task Management
 **Location**: `tasks/`
@@ -133,15 +137,15 @@ Defines the benchmark task structure:
 - **Task**: User-facing task definition with:
   - `prompt`: The task instruction
   - `mcps`: List of MCP configurations
-  - `verifiers`: List of verification checks
   - `max_steps`: Maximum agent turns
   - `metadata`: Additional context
   - `database_id`: Isolated database instance
+  - Note: Verifiers are no longer part of Task - they are managed separately by orchestrators (e.g., CLI)
 
 - **Result**: Task execution outcome with:
-  - Success/failure status
+  - Success/failure status (from agent execution)
   - Final message history
-  - Verifier results
+  - Verifier results (can be enriched post-execution by orchestrators)
   - Metadata
 
 - **Scenario**: Advanced task with multiple prompts for conversation mode
@@ -220,29 +224,35 @@ Handles LLM response parsing across providers:
 - Stop reason
 - Usage metrics
 
-### 6. Verifier Layer
+### 6. Verifier Layer (SDK Utilities)
 **Location**: `verifiers/`
 
-Validates task completion:
+**Important**: The verifier layer is a set of SDK utilities that can be used independently by orchestrators (e.g., CLI).
+Agents have zero knowledge of verifiers - verification is orchestrated externally.
 
 - **Verifier (Base)**: Abstract verifier interface
   - `verify()` - Returns pass/fail result
   - `description` - Human-readable check
+  - Pure utility class, not coupled to agents
 
 - **DatabaseVerifier**: SQL-based verification
   - Executes queries against test database
   - Compares results to expected values
   - Supports complex assertions
+  - Can be used by any orchestrator
 
 - **Verifier Executor**: Batch execution utility
+  - `execute_verifiers()` - Standalone function
   - Runs multiple verifiers
   - Manages HTTP client lifecycle
   - Aggregates results
+  - No agent dependencies
 
 **VerificationContext**:
 - SQL runner URL
 - Database ID (isolation)
 - HTTP client
+- Used by verifiers, independent of agent execution
 
 ### 7. Utils
 **Location**: `utils/`
@@ -256,6 +266,8 @@ Shared utilities:
 
 ## Execution Flow
 
+### SDK-Level (Decoupled from Verification)
+
 ```mermaid
 sequenceDiagram
     participant User
@@ -265,7 +277,6 @@ sequenceDiagram
     participant LLM
     participant Parser
     participant Tools
-    participant Verifier
 
     User->>Agent: run(task)
     Agent->>RunContext: Create/receive context
@@ -286,10 +297,31 @@ sequenceDiagram
         end
     end
     
-    Agent->>Verifier: Execute verifiers
-    Verifier->>Agent: Verification results
-    Agent->>User: Return Result
+    Agent->>User: Return Result (no verification)
     Agent->>RunContext: Cleanup resources
+```
+
+### CLI-Level (Orchestrated Verification)
+
+```mermaid
+sequenceDiagram
+    participant CLI
+    participant Agent
+    participant VerifierRunner
+    participant Verifier
+    participant RunContext
+
+    CLI->>Agent: run(task)
+    Agent->>CLI: Return Result (agent success only)
+    
+    CLI->>VerifierRunner: run_verifiers(verifiers, context)
+    VerifierRunner->>Verifier: Execute each verifier
+    Verifier->>VerifierRunner: Verification results
+    VerifierRunner->>RunContext: Notify observers
+    VerifierRunner->>CLI: Return verifier results
+    
+    CLI->>CLI: Merge agent + verifier results
+    CLI->>CLI: Determine final success
 ```
 
 ## Key Design Principles
@@ -324,21 +356,64 @@ sequenceDiagram
 - Plugin-style verifiers
 - Custom tool support
 
+### 7. **Decoupled Verification**
+- Agents have zero knowledge of verifiers
+- Verification is orchestrated externally (e.g., by CLI)
+- Verifiers are SDK utilities, not agent responsibilities
+- Enables any agent to work with any verifier
+- CLI controls when and how verification happens
+
 ## Usage Patterns
 
-### Basic Usage (High-Level)
+### Basic Usage - SDK Only (Agent Execution)
 ```python
-from mcp_benchmark_sdk import Task, ClaudeAgent, MCPConfig, DatabaseVerifier
+from mcp_benchmark_sdk import Task, ClaudeAgent, MCPConfig
 
+# Task no longer has verifiers - pure execution config
 task = Task(
     prompt="Create a new Jira issue",
     mcps=[MCPConfig(command="jira-mcp", args=[])],
-    verifiers=[DatabaseVerifier(query="SELECT COUNT(*) FROM issues", expected=1)]
 )
 
 agent = ClaudeAgent()
 result = await agent.run(task)
+# result.success is based ONLY on agent completion, not verification
 print(result.success)
+```
+
+### Advanced Usage - With Verification (Orchestrator Pattern)
+```python
+from mcp_benchmark_sdk import Task, ClaudeAgent, MCPConfig, RunContext
+from mcp_benchmark_sdk.verifiers import DatabaseVerifier, execute_verifiers
+
+# Define task (no verifiers)
+task = Task(
+    prompt="Create a new Jira issue",
+    mcps=[MCPConfig(command="jira-mcp", args=[])],
+)
+
+# Define verifiers separately
+verifiers = [
+    DatabaseVerifier(query="SELECT COUNT(*) FROM issues", expected_value=1)
+]
+
+# Run agent
+agent = ClaudeAgent()
+async with RunContext(sql_runner_url="http://localhost:8080") as ctx:
+    result = await agent.run(task, run_context=ctx)
+    
+    # Orchestrate verification separately
+    verifier_results = await execute_verifiers(
+        verifiers,
+        ctx.sql_runner_url,
+        ctx.database_id,
+        ctx.get_http_client(),
+    )
+    
+    # Merge results
+    result.verifier_results = verifier_results
+    final_success = result.success and all(v.success for v in verifier_results)
+    print(final_success)
 ```
 
 ### With Observability (Mid-Level)
@@ -351,10 +426,18 @@ class MyObserver(RunObserver):
     
     async def on_tool_call(self, tool_name, arguments, result, is_error):
         print(f"Tool: {tool_name}({arguments}) -> {result}")
+    
+    async def on_verifier_update(self, results):
+        print(f"Verifiers: {results}")
 
+# Agent execution with observation
 async with RunContext() as ctx:
     ctx.add_observer(MyObserver())
     result = await agent.run(task, run_context=ctx)
+    
+    # Verification can also be observed
+    verifier_results = await execute_verifiers(verifiers, ctx.sql_runner_url, ctx.database_id, ctx.get_http_client())
+    await ctx.notify_verifier_update(verifier_results)
 ```
 
 ### Custom Agent (Low-Level)
@@ -434,15 +517,25 @@ class MyParser(ResponseParser):
 
 ### Adding a New Verifier Type
 
+Verifiers are SDK utilities that can be used by any orchestrator (CLI, custom code, etc.).
+They have no knowledge of agents.
+
 1. Create verifier in `verifiers/`:
 ```python
 class MyVerifier(Verifier):
     async def verify(self, context: VerificationContext) -> VerifierResult:
         # Custom verification logic
+        # No agent dependencies - pure utility
         return VerifierResult(...)
 ```
 
 2. Export in `__init__.py`
+
+3. Use in orchestrator (e.g., CLI):
+```python
+verifier = MyVerifier(...)
+results = await execute_verifiers([verifier], sql_url, db_id, http_client)
+```
 
 ### Adding Custom Observers
 

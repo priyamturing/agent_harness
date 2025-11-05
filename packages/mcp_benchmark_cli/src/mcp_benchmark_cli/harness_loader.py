@@ -85,7 +85,7 @@ def load_harness_file(path: Path) -> list[Scenario]:
 
         scenarios.append(
             Scenario(
-                scenario_id=entry.get("scenario_id", "unknown"),
+                scenario_id=entry.get("scenario_id") or entry.get("name", "unknown"),
                 name=entry.get("name", "Unnamed Scenario"),
                 description=entry.get("description", ""),
                 prompts=tuple(prompts),
@@ -101,8 +101,11 @@ def scenario_to_task(
     scenario: Scenario,
     mcps: list[MCPConfig],
     database_id: Optional[str] = None,
-) -> Task:
-    """Convert Scenario to SDK Task.
+) -> tuple[Task, list[Verifier]]:
+    """Convert Scenario to SDK Task and verifiers separately.
+    
+    This function decouples verification from task execution,
+    allowing CLI orchestrators to control when and how verification happens.
 
     Args:
         scenario: Scenario from harness file
@@ -110,7 +113,7 @@ def scenario_to_task(
         database_id: Optional database ID for isolation
 
     Returns:
-        Task ready for agent execution
+        Tuple of (Task, list of Verifiers) for independent orchestration
     """
     # Collect all verifiers from all prompts
     sdk_verifiers: list[Verifier] = []
@@ -128,10 +131,9 @@ def scenario_to_task(
     else:
         prompt_text = scenario.prompts[0].prompt_text if scenario.prompts else ""
 
-    return Task(
+    task = Task(
         prompt=prompt_text,
         mcps=mcps,
-        verifiers=sdk_verifiers,
         metadata={
             "scenario_id": scenario.scenario_id,
             "scenario_name": scenario.name,
@@ -142,6 +144,8 @@ def scenario_to_task(
         database_id=database_id,
         conversation_mode=scenario.conversation_mode,
     )
+    
+    return task, sdk_verifiers
 
 
 def _create_verifier_from_definition(verifier_def: VerifierDefinition) -> Verifier:

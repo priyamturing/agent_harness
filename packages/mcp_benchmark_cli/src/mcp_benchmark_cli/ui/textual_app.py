@@ -666,10 +666,10 @@ class MultiRunApp(App[None]):
                             self.update_run_status(label, status="running", start_time=datetime.now().isoformat())
                             self.log_global_activity(f"{label}: [yellow]Started[/yellow]")
                         elif "Completed successfully" in message or "✓" in message:
-                            self.update_run_status(label, status="completed", success=True, end_time=datetime.now().isoformat())
+                            self.update_run_status(label, status="completed", success=True, end_time=datetime.now().isoformat(), progress="")
                             self.log_global_activity(f"{label}: [green]Success ✓[/green]")
                         elif "Failed" in message or "✗" in message:
-                            self.update_run_status(label, status="completed", success=False, end_time=datetime.now().isoformat())
+                            self.update_run_status(label, status="completed", success=False, end_time=datetime.now().isoformat(), progress="")
                             self.log_global_activity(f"{label}: [red]Failed ✗[/red]")
                         elif "Invoking tool" in message:
                             # Extract tool name if possible

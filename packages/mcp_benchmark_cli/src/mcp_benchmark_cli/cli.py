@@ -9,6 +9,10 @@ from typing import Optional
 # Suppress transformers warning (imported by langchain_anthropic)
 os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
 
+# Suppress gRPC fork warnings (common with Google libraries + asyncio)
+# This is safe across all platforms and prevents the fork() warning messages
+os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "1")
+
 import typer
 from dotenv import load_dotenv
 from mcp_benchmark_sdk import MCPConfig, RunContext
@@ -19,6 +23,7 @@ from .config import DEFAULT_JIRA_MCP, DEFAULT_SQL_RUNNER_URL, RESULTS_ROOT, MAX_
 from .harness_loader import load_harness_file, scenario_to_task
 from .session.manager import SessionManager
 from .ui import ConsoleObserver, TextualObserver, MultiRunApp
+from .verifier_runner import VerifierRunner
 
 app = typer.Typer(help="Run MCP agent benchmarks with various LLM providers")
 console = Console()
@@ -314,16 +319,41 @@ async def run_all_plain(
                 tool_call_limit=tool_call_limit,
             )
             
-            # Convert scenario to task
-            task = scenario_to_task(cfg["scenario"], [mcp_config])
+            # Convert scenario to task and extract verifiers separately
+            task, verifiers = scenario_to_task(cfg["scenario"], [mcp_config])
             
             # Create RunContext
             run_context = RunContext(sql_runner_url=sql_runner_url)
-            observer = ConsoleObserver(console=console, prefix=cfg["label"])
+            
+            # Add console observer for output (with optional verifiers)
+            observer = ConsoleObserver(
+                console=console,
+                prefix=cfg["label"],
+                verifiers=verifiers,
+                run_context=run_context,
+            )
             run_context.add_observer(observer)
             
-            # Run task
+            # Run agent (with continuous verification via observer)
             result = await agent.run(task, max_steps=max_steps, run_context=run_context)
+            
+            # Run verification separately (CLI orchestrates this)
+            verifier_runner = VerifierRunner()
+            verifier_results = await verifier_runner.run_verifiers(verifiers, run_context)
+            
+            # Enrich result with verifier results
+            result.verifier_results = verifier_results
+            
+            # Determine final success
+            all_verifiers_passed = all(v.success for v in verifier_results) if verifier_results else True
+            final_success = result.success and all_verifiers_passed
+            
+            # Update result with final status
+            if not all_verifiers_passed:
+                failed = [v.name for v in verifier_results if not v.success]
+                result.error = f"Verifiers failed: {', '.join(failed)}"
+            
+            result.success = final_success
             
             # Save result
             result_file = session_mgr.save_result(
@@ -442,20 +472,43 @@ async def run_benchmark_plain(
                 console.print(f"[dim]{scenario.description}[/dim]\n")
 
                 try:
-                    # Convert to Task
-                    task = scenario_to_task(scenario, [mcp_config])
+                    # Convert to Task and extract verifiers separately
+                    task, verifiers = scenario_to_task(scenario, [mcp_config])
 
                     # Create RunContext with observer and SQL runner
                     run_context = RunContext(
                         sql_runner_url=sql_runner_url,
                     )
 
-                    # Add console observer
-                    observer = ConsoleObserver(console=console, prefix=model_name)
+                    # Add console observer (with optional verifiers)
+                    observer = ConsoleObserver(
+                        console=console,
+                        prefix=model_name,
+                        verifiers=verifiers,
+                        run_context=run_context,
+                    )
                     run_context.add_observer(observer)
 
-                    # Run task
+                    # Run agent (with continuous verification via observer)
                     result = await agent.run(task, max_steps=max_steps, run_context=run_context)
+                    
+                    # Run verification separately (CLI orchestrates this)
+                    verifier_runner = VerifierRunner()
+                    verifier_results = await verifier_runner.run_verifiers(verifiers, run_context)
+                    
+                    # Enrich result with verifier results
+                    result.verifier_results = verifier_results
+                    
+                    # Determine final success
+                    all_verifiers_passed = all(v.success for v in verifier_results) if verifier_results else True
+                    final_success = result.success and all_verifiers_passed
+                    
+                    # Update result with final status
+                    if not all_verifiers_passed:
+                        failed = [v.name for v in verifier_results if not v.success]
+                        result.error = f"Verifiers failed: {', '.join(failed)}"
+                    
+                    result.success = final_success
 
                     # Display result
                     if result.success:
@@ -692,22 +745,46 @@ async def run_single_task(
                 tool_call_limit=tool_call_limit,
             )
 
-            # Convert to Task
-            task = scenario_to_task(scenario, [mcp_config])
+            # Convert to Task and extract verifiers separately
+            task, verifiers = scenario_to_task(scenario, [mcp_config])
 
             # Create RunContext with Textual observer
             run_context = RunContext(
                 sql_runner_url=sql_runner_url,
             )
 
-            observer = TextualObserver(queue=queue, width=100)
+            # Add Textual observer for UI display (with optional verifiers)
+            observer = TextualObserver(
+                queue=queue,
+                width=100,
+                verifiers=verifiers,
+                run_context=run_context,
+            )
             run_context.add_observer(observer)
 
             # Send initial status
             await queue.put(f"[bold]Starting {label}...[/bold]\n")
 
-            # Run task
+            # Run agent (with continuous verification via observer)
             result = await agent.run(task, max_steps=max_steps, run_context=run_context)
+
+            # Run verification separately (CLI orchestrates this)
+            verifier_runner = VerifierRunner()
+            verifier_results = await verifier_runner.run_verifiers(verifiers, run_context)
+
+            # Enrich result with verifier results
+            result.verifier_results = verifier_results
+
+            # Determine final success
+            all_verifiers_passed = all(v.success for v in verifier_results) if verifier_results else True
+            final_success = result.success and all_verifiers_passed
+            
+            # Update result with final status
+            if not all_verifiers_passed:
+                failed = [v.name for v in verifier_results if not v.success]
+                result.error = f"Verifiers failed: {', '.join(failed)}"
+            
+            result.success = final_success
 
             # Save result with batch alias in filename
             result_file = session_mgr.save_result(

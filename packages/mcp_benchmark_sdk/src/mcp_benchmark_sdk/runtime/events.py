@@ -42,14 +42,6 @@ class RunObserver(ABC):
         """
 
     @abstractmethod
-    async def on_verifier_update(self, verifier_results: list[Any]) -> None:
-        """Called when verifiers are executed.
-
-        Args:
-            verifier_results: List of verifier results
-        """
-
-    @abstractmethod
     async def on_status(self, message: str, level: str = "info") -> None:
         """Called for status updates.
 
@@ -74,9 +66,6 @@ class NoOpObserver(RunObserver):
         result: Any,
         is_error: bool = False,
     ) -> None:
-        pass
-
-    async def on_verifier_update(self, verifier_results: list[Any]) -> None:
         pass
 
     async def on_status(self, message: str, level: str = "info") -> None:
