@@ -202,4 +202,3 @@ class TextualObserver(RunObserver):
             "log_stream": list(self._artifacts["log_stream"]),
             "status_stream": list(self._artifacts["status_stream"]),
         }
-
