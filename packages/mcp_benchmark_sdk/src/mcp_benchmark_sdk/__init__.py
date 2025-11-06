@@ -17,6 +17,22 @@ from .verifiers import Verifier, DatabaseVerifier, VerifierResult
 # Runtime context and events
 from .runtime import RunContext, RunObserver
 
+# Test harness for running benchmarks
+from .harness import (
+    TestHarness,
+    TestHarnessConfig,
+    RunResult,
+    HarnessLoader,
+    load_harness_file,
+    load_harness_directory,
+    scenario_to_task,
+    create_agent,
+    DEFAULT_SYSTEM_PROMPT,
+    Scenario,
+    ScenarioPrompt,
+    VerifierDefinition,
+)
+
 # For advanced users
 from .parsers import ResponseParser, ParsedResponse
 from .tasks import AgentResponse, ToolCall, ToolResult
@@ -63,6 +79,19 @@ __all__ = [
     "Verifier",
     "DatabaseVerifier",
     "VerifierResult",
+    # Test Harness
+    "TestHarness",
+    "TestHarnessConfig",
+    "RunResult",
+    "HarnessLoader",
+    "load_harness_file",
+    "load_harness_directory",
+    "scenario_to_task",
+    "create_agent",
+    "DEFAULT_SYSTEM_PROMPT",
+    "Scenario",
+    "ScenarioPrompt",
+    "VerifierDefinition",
     # Parsers
     "ResponseParser",
     "ParsedResponse",
