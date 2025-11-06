@@ -2,30 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from ..agents import Agent, ClaudeAgent, GeminiAgent, GPTAgent, GrokAgent
-
-
-DEFAULT_SYSTEM_PROMPT = """
-You are an autonomous project-management agent operating inside an MCP server.
-You receive: (a) a user request and (b) a set of tool definitions (schemas, params, return types).
-Your goal is to complete the tasks assigned to you by using these tools effectively and efficiently.
-Your only way to read or modify project state is via these tools.
-
-Operating constraints
-- Non-interactive: The user will not answer follow-ups. Do not ask questions. Do not halt for clarification.
-- Obligation: Treat the user request as correct and feasible with the provided context. Execute to completion with best effort.
-- Tools-first: Treat tool definitions as the single source of truth. Do not fabricate data, IDs, or results. Never assume hidden state.
-
-Core behavior
-- Objective-first: Extract the core objective succinctly and decompose into the minimal set of steps to achieve it.
-- Read-before-write: When safe and efficient, fetch current state to avoid duplicates, race conditions, or destructive updates.
-- Preconditions: Check the parameters before calling tools.
-
-Tool usage policy
-- Error Handling: Incase a tool call results in an error, retry the tool calling adjusting the parameters based on the error message, retrying with same parameters will only result in the same error.
-""".strip()
+from ..telemetry import TracingAgent, with_tracing
 
 
 def create_agent(
@@ -47,7 +27,7 @@ def create_agent(
         temperature: Sampling temperature
         max_output_tokens: Maximum output tokens
         tool_call_limit: Maximum tool calls per run
-        system_prompt: Optional system prompt (defaults to DEFAULT_SYSTEM_PROMPT)
+        system_prompt: Optional system prompt (defaults to None - no system message)
         **kwargs: Additional arguments passed to agent
 
     Returns:
@@ -60,9 +40,9 @@ def create_agent(
         >>> agent = create_agent("gpt-4o")
         >>> agent = create_agent("anthropic:claude-sonnet-4-5")
         >>> agent = create_agent("gemini-2.5-pro", temperature=0.5, tool_call_limit=500)
+        >>> agent = create_agent("gpt-4o", system_prompt="You are a helpful assistant")
     """
-    if system_prompt is None:
-        system_prompt = DEFAULT_SYSTEM_PROMPT
+    # System prompt defaults to None (no system message)
 
     provider_hint: Optional[str] = None
     model_name = model
@@ -122,7 +102,7 @@ def create_agent(
             system_prompt=system_prompt,
             **kwargs,
         )
-    elif model_lower.startswith("gpt") or model_lower.startswith("o"):
+    elif model_lower.startswith("gpt"):
         return GPTAgent(
             model=model_name,
             temperature=temperature,
@@ -154,3 +134,42 @@ def create_agent(
             f"Unable to determine provider for model '{model}'. "
             "Use explicit format 'provider:model' (e.g., 'openai:gpt-4o')"
         )
+
+
+def create_traced_agent(
+    model: str,
+    temperature: float = 0.1,
+    max_output_tokens: Optional[int] = None,
+    tool_call_limit: int = 1000,
+    system_prompt: Optional[str] = None,
+    **kwargs: Any,
+) -> Union[Agent, TracingAgent]:
+    """Create agent with automatic LangSmith tracing if enabled.
+    
+    Convenience wrapper around create_agent() + with_tracing().
+    
+    Args:
+        model: Model name or provider:model
+        temperature: Sampling temperature
+        max_output_tokens: Maximum output tokens
+        tool_call_limit: Maximum tool calls per run
+        system_prompt: Optional system prompt
+        **kwargs: Additional arguments passed to agent
+        
+    Returns:
+        Agent instance (wrapped with TracingAgent if LANGCHAIN_TRACING_V2=true)
+        
+    Example:
+        >>> # If LANGCHAIN_TRACING_V2=true, automatically wraps with tracing
+        >>> agent = create_traced_agent("gpt-4o")
+        >>> result = await agent.run(task)  # Automatically traced!
+    """
+    agent = create_agent(
+        model=model,
+        temperature=temperature,
+        max_output_tokens=max_output_tokens,
+        tool_call_limit=tool_call_limit,
+        system_prompt=system_prompt,
+        **kwargs,
+    )
+    return with_tracing(agent)

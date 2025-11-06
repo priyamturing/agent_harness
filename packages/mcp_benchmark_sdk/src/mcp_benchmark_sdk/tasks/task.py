@@ -19,7 +19,7 @@ class Task:
     """
 
     prompt: str
-    mcps: list["MCPConfig"]
+    mcp: "MCPConfig"
     max_steps: int = DEFAULT_MAX_STEPS
     metadata: dict[str, Any] = field(default_factory=dict)
     database_id: Optional[str] = None
@@ -32,9 +32,9 @@ class Task:
                 "Task.prompt cannot be empty. Provide a non-empty prompt string."
             )
         
-        if not self.mcps:
+        if not self.mcp:
             raise ValueError(
-                "Task.mcps cannot be empty. Provide at least one MCPConfig."
+                "Task.mcp cannot be None. Provide an MCPConfig instance."
             )
         
         if self.max_steps <= 0:

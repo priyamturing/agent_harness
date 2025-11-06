@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 import warnings
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.runnables import Runnable
 
 from ..constants import (
     DEFAULT_LLM_MAX_RETRIES,
@@ -81,7 +82,7 @@ class ClaudeAgent(Agent):
         self.thinking_budget_tokens = thinking_budget_tokens
         self.extra_kwargs = kwargs
 
-    def _build_llm(self) -> BaseChatModel:
+    def _build_llm(self) -> Union[BaseChatModel, Runnable]:
         """Build Claude model with configuration."""
         model_name = self.model
         normalized_model = model_name.lower()
@@ -136,9 +137,11 @@ class ClaudeAgent(Agent):
         """Get Claude model response with retry logic."""
         if not self._llm:
             raise RuntimeError("LLM not initialized. Call initialize() first.")
+        
+        llm = self._llm  # Capture for type narrowing
 
         async def _invoke():
-            return await self._llm.ainvoke(messages)
+            return await llm.ainvoke(messages)
 
         # Retry with backoff
         ai_message = await retry_with_backoff(

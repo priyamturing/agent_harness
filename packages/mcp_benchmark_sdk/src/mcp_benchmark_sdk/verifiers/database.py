@@ -7,6 +7,7 @@ from typing import Any, Optional
 import httpx
 
 from ..constants import DATABASE_VERIFIER_TIMEOUT_SECONDS
+from ..utils import derive_sql_runner_url
 from .base import Verifier, VerifierResult
 
 
@@ -87,32 +88,25 @@ def _compare(actual: Any, expected: Any, comparison: Optional[str]) -> bool:
 
     comparison = comparison.lower().strip()
     
-    # Equals - can handle None
     if comparison in ("equals", "eq", "==", "equal"):
         return actual == expected
     
-    # Ordered comparisons - require non-None values
     if actual is None:
         raise TypeError(
             f"Cannot perform ordered comparison '{comparison}' with None value. "
             f"SQL query returned None."
         )
     
-    # Type check for ordered comparisons
     try:
-        # Greater than
         if comparison in ("greater_than", "gt", ">"):
             return actual > expected
         
-        # Less than
         elif comparison in ("less_than", "lt", "<"):
             return actual < expected
         
-        # Greater than or equal
         elif comparison in ("greater_than_equal", "greater_than_or_equal", "greater_than_or_equal_to", "gte", ">=", "greater_or_equal"):
             return actual >= expected
         
-        # Less than or equal
         elif comparison in ("less_than_equal", "less_than_or_equal", "less_than_or_equal_to", "lte", "<=", "less_or_equal"):
             return actual <= expected
     except TypeError as e:
@@ -149,7 +143,7 @@ class DatabaseVerifier(Verifier):
         self,
         query: str,
         expected_value: Any,
-        sql_runner_url: str,
+        mcp_url: str,
         database_id: str,
         comparison: str = "equals",
         name: Optional[str] = None,
@@ -160,7 +154,7 @@ class DatabaseVerifier(Verifier):
         Args:
             query: SQL query to execute
             expected_value: Expected value from query
-            sql_runner_url: SQL runner endpoint URL
+            mcp_url: MCP server URL (SQL runner URL will be derived from this)
             database_id: Database ID for isolation
             comparison: Comparison type. Supports:
                 - equals, eq, ==
@@ -177,7 +171,7 @@ class DatabaseVerifier(Verifier):
         super().__init__(name or "DatabaseVerifier")
         self.query = query
         self.expected_value = expected_value
-        self.sql_runner_url = sql_runner_url
+        self.sql_runner_url = derive_sql_runner_url(mcp_url)
         self.database_id = database_id
         self.comparison = comparison
         self._http_client = http_client

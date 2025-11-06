@@ -28,13 +28,11 @@ async def main():
     
     task = Task(
         prompt="Create a bug issue in project DEMO",
-        mcps=[
-            MCPConfig(
-                name="jira",
-                url="http://localhost:8015/mcp",
-                transport="streamable_http"
-            )
-        ]
+        mcp=MCPConfig(
+            name="jira",
+            url="http://localhost:8015/mcp",
+            transport="streamable_http"
+        )
     )
     
     result = await agent.run(task)

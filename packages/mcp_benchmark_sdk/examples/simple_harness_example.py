@@ -43,8 +43,7 @@ async def main():
     harness = TestHarness(
         harness_path=Path("task4.json"),
         config=TestHarnessConfig(
-            mcps=[mcp_config],
-            sql_runner_url="http://localhost:8015/api/sql-runner",
+            mcp=mcp_config,
             max_steps=1000,
             tool_call_limit=1000,
             temperature=0.1,
@@ -84,7 +83,8 @@ async def main():
             print(f"  Verifiers:")
             for v in result.verifier_results:
                 v_status = "✓" if v.success else "✗"
-                print(f"    {v_status} {v.name}: {v.message}")
+                msg = v.error if v.error else f"{v.actual_value} vs {v.expected_value}"
+                print(f"    {v_status} {v.name}: {msg}")
         
         # Export to dict for saving (includes full conversation)
         result_dict = result.to_dict()

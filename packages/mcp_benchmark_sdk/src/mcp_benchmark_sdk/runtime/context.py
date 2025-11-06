@@ -15,19 +15,17 @@ class RunContext:
 
     Centralizes:
     - Unique database ID per run
-    - SQL runner URL for verifiers
     - Event observers for logging/telemetry
     
     Can be used as an async context manager for automatic cleanup:
     ```python
-    async with RunContext(sql_runner_url=url) as ctx:
+    async with RunContext() as ctx:
         # Resources are automatically cleaned up on exit
         await agent.run(task, run_context=ctx)
     ```
     """
 
     database_id: str = field(default_factory=lambda: str(uuid4()))
-    sql_runner_url: Optional[str] = None
     observers: list[RunObserver] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 

@@ -24,8 +24,7 @@ mcp_config = MCPConfig(
 harness = TestHarness(
     harness_path=Path("benchmarks/task1.json"),
     config=TestHarnessConfig(
-        mcps=[mcp_config],
-        sql_runner_url="http://localhost:8015/api/sql-runner",
+        mcp=mcp_config,
         max_steps=1000,
         tool_call_limit=1000,
         runs_per_scenario=3,  # Run each scenario 3 times
@@ -174,8 +173,7 @@ The `to_dict()` method provides a complete serializable representation including
 
 ```python
 config = TestHarnessConfig(
-    mcps=[mcp_config],
-    sql_runner_url="http://localhost:8015/api/sql-runner",
+    mcp=mcp_config,
     max_steps=1000,              # Max agent steps per run
     tool_call_limit=1000,        # Max tool calls per run
     temperature=0.1,             # Model temperature

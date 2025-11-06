@@ -18,7 +18,7 @@ from .verifiers import Verifier, DatabaseVerifier, VerifierResult
 from .runtime import RunContext, RunObserver
 
 # Telemetry and tracing
-from .telemetry import configure_langsmith, get_langsmith_client, is_tracing_enabled, get_trace_url, print_trace_summary
+from .telemetry import configure_langsmith, get_langsmith_client, is_tracing_enabled, get_trace_url, print_trace_summary, with_tracing, TracingAgent
 
 # Test harness for running benchmarks
 from .harness import (
@@ -30,7 +30,7 @@ from .harness import (
     load_harness_directory,
     scenario_to_task,
     create_agent,
-    DEFAULT_SYSTEM_PROMPT,
+    create_traced_agent,
     Scenario,
     ScenarioPrompt,
     VerifierDefinition,
@@ -59,6 +59,9 @@ from .constants import (
     DATABASE_VERIFIER_TIMEOUT_SECONDS,
 )
 
+# Utility functions
+from .utils import derive_sql_runner_url
+
 __all__ = [
     # Core
     "Agent",
@@ -72,6 +75,8 @@ __all__ = [
     "is_tracing_enabled",
     "get_trace_url",
     "print_trace_summary",
+    "with_tracing",
+    "TracingAgent",
     # Agents
     "ClaudeAgent",
     "GPTAgent",
@@ -97,7 +102,7 @@ __all__ = [
     "load_harness_directory",
     "scenario_to_task",
     "create_agent",
-    "DEFAULT_SYSTEM_PROMPT",
+    "create_traced_agent",
     "Scenario",
     "ScenarioPrompt",
     "VerifierDefinition",
@@ -120,5 +125,7 @@ __all__ = [
     "RETRY_DEFAULT_MAX_ATTEMPTS",
     "RETRY_TRANSIENT_STATUS_CODES",
     "DATABASE_VERIFIER_TIMEOUT_SECONDS",
+    # Utils
+    "derive_sql_runner_url",
 ]
 

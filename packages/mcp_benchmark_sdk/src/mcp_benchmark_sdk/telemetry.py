@@ -10,9 +10,48 @@ tracing works automatically by setting environment variables.
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import TYPE_CHECKING, Optional, TypeVar, Union
 
-from langsmith import Client
+from langsmith import Client, traceable, get_current_run_tree
+
+if TYPE_CHECKING:
+    from .agents import Agent
+    from .tasks import Task, Result
+    from .runtime import RunContext
+    from .constants import DEFAULT_MAX_STEPS
+
+# TypeVar for preserving agent type through tracing wrapper
+AgentT = TypeVar("AgentT", bound="Agent")
+
+
+def _get_current_trace_url() -> Optional[str]:
+    """Get LangSmith trace URL for the current run.
+    
+    Returns:
+        LangSmith trace URL (shareable link) or None if not available
+    """
+    try:
+        run_tree = get_current_run_tree()
+        if not run_tree or not run_tree.id:
+            return None
+        
+        # Fetch the run from LangSmith to get the correct shareable URL
+        try:
+            client = Client()
+            run = client.read_run(str(run_tree.id))
+            
+            if run and hasattr(run, "url") and run.url:
+                return run.url
+        except Exception:
+            pass
+        
+        # Fallback: use the trace_url from run_tree
+        if hasattr(run_tree, "trace_url") and run_tree.trace_url:
+            return run_tree.trace_url
+        
+        return None
+    except Exception:
+        return None
 
 
 def configure_langsmith(
@@ -205,11 +244,149 @@ def print_trace_summary(project_name: Optional[str] = None, limit: int = 10) -> 
         print(f"Error fetching runs: {e}")
 
 
+class TracingAgent:
+    """Wrapper that adds LangSmith tracing to any agent.
+    
+    This decorator pattern keeps the Agent class clean while providing
+    full LangSmith observability when needed.
+    
+    Usage:
+        agent = ClaudeAgent()
+        traced_agent = with_tracing(agent)
+        result = await traced_agent.run(task)
+    """
+    
+    def __init__(self, agent: "Agent"):
+        """Wrap an agent with tracing capabilities.
+        
+        Args:
+            agent: The agent to wrap
+        """
+        self._agent = agent
+        # Delegate all attributes to wrapped agent
+        self.__dict__.update({k: v for k, v in agent.__dict__.items() if not k.startswith('_')})
+    
+    def __getattr__(self, name: str):
+        """Delegate attribute access to wrapped agent."""
+        return getattr(self._agent, name)
+    
+    async def run(
+        self,
+        task: "Task",
+        max_steps: int = 1000,
+        *,
+        run_context: Optional["RunContext"] = None,
+    ) -> "Result":
+        """Run agent with LangSmith tracing.
+        
+        Creates a parent trace that groups all LLM calls and tool executions.
+        Metadata includes model, scenario, database_id, session_id for filtering.
+        """
+        if not is_tracing_enabled():
+            # Tracing disabled - run agent directly
+            return await self._agent.run(task, max_steps, run_context=run_context)
+        
+        # Build trace metadata
+        model_name = self._agent.model if hasattr(self._agent, "model") else "unknown"  # type: ignore[attr-defined]
+        
+        # Extract scenario info from task metadata
+        scenario_name = "task"
+        run_number = None
+        if task and hasattr(task, "metadata") and task.metadata:
+            scenario_name = task.metadata.get("scenario_name", scenario_name)
+            run_number = task.metadata.get("run_number")
+        
+        # Build readable trace name: "grok-4: scenario_name (run 2)"
+        trace_name = f"{model_name}: {scenario_name}"
+        if run_number is not None:
+            trace_name = f"{trace_name} (run {run_number})"
+        
+        # Get database_id (from run_context if provided, or will be created by agent)
+        db_id = run_context.database_id if run_context else (task.database_id if task and task.database_id else None)
+        
+        # Get session_id and thread_id for grouping (LangSmith Threads feature)
+        session_id = None
+        thread_id = None
+        if task and task.metadata:
+            session_id = task.metadata.get("session_id")
+            thread_id = task.metadata.get("thread_id")
+            
+            # Generate thread_id if not provided (unique per model+scenario+run)
+            if not thread_id and session_id:
+                thread_id = f"{session_id}_{model_name}_{scenario_name}_run{run_number or 1}"
+        
+        # Create metadata for filtering/search
+        trace_metadata = {
+            "model": model_name,
+            "scenario": scenario_name,
+            "database_id": db_id,
+            "prompt_preview": task.prompt[:100] if task and task.prompt else "N/A",
+        }
+        if run_number is not None:
+            trace_metadata["run_number"] = run_number
+        if session_id:
+            trace_metadata["session_id"] = session_id
+        if thread_id:
+            trace_metadata["thread_id"] = thread_id
+        
+        # Use traceable wrapper with descriptive name
+        @traceable(name=trace_name, run_type="chain", metadata=trace_metadata)
+        async def _traced_run():
+            result = await self._agent.run(task, max_steps, run_context=run_context)
+            
+            # Populate LangSmith trace URL in result
+            result.langsmith_url = _get_current_trace_url()
+            
+            return result
+        
+        return await _traced_run()
+    
+    async def initialize(self, *args, **kwargs):
+        """Delegate to wrapped agent."""
+        return await self._agent.initialize(*args, **kwargs)
+    
+    async def cleanup(self):
+        """Delegate to wrapped agent."""
+        return await self._agent.cleanup()
+    
+    def get_available_tools(self):
+        """Delegate to wrapped agent."""
+        return self._agent.get_available_tools()
+    
+    async def call_tools(self, *args, **kwargs):
+        """Delegate to wrapped agent."""
+        return await self._agent.call_tools(*args, **kwargs)
+
+
+def with_tracing(agent: AgentT) -> Union[AgentT, TracingAgent]:
+    """Wrap an agent with LangSmith tracing.
+    
+    This is a convenience function that returns the agent as-is if tracing
+    is disabled, or wraps it with TracingAgent if tracing is enabled.
+    
+    Args:
+        agent: Agent to potentially wrap
+        
+    Returns:
+        TracingAgent wrapper if tracing enabled, otherwise original agent
+        
+    Example:
+        >>> agent = create_agent("gpt-4o")
+        >>> agent = with_tracing(agent)  # Auto-wraps if LANGCHAIN_TRACING_V2=true
+        >>> result = await agent.run(task)
+    """
+    if is_tracing_enabled():
+        return TracingAgent(agent)  
+    return agent
+
+
 __all__ = [
     "configure_langsmith",
     "get_langsmith_client",
     "is_tracing_enabled",
     "get_trace_url",
     "print_trace_summary",
+    "TracingAgent",
+    "with_tracing",
 ]
 

@@ -5,8 +5,7 @@ import json
 from typing import Any, Optional
 
 from mcp_benchmark_sdk import RunObserver, VerifierResult
-
-from ..verifier_runner import VerifierRunner
+from mcp_benchmark_sdk.harness.orchestrator import VerifierRunner
 
 
 def _json_safe(value: object) -> object:

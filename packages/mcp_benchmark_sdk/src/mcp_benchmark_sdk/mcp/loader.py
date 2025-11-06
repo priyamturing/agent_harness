@@ -1,4 +1,4 @@
-"""MCP client management for connecting to multiple servers."""
+"""MCP client management for connecting to a single server."""
 
 from __future__ import annotations
 
@@ -12,60 +12,56 @@ from .tool_fixer import fix_tool_schemas
 
 
 class MCPClientManager:
-    """Manager for MCP client connections.
+    """Manager for MCP client connection.
 
     Handles:
-    - Connecting to multiple MCP servers
-    - Tool retrieval from servers
+    - Connecting to an MCP server
+    - Tool retrieval from server
     - Adding x-database-id header when needed
     """
 
     def __init__(self):
         self._client: Optional[MultiServerMCPClient] = None
-        self._configs: dict[str, MCPConfig] = {}
+        self._config: Optional[MCPConfig] = None
         self._tools: list[BaseTool] = []
 
     async def connect(
         self,
-        configs: list[MCPConfig],
+        config: MCPConfig,
         database_id: Optional[str] = None,
     ) -> None:
-        """Connect to multiple MCP servers.
+        """Connect to MCP server.
 
         Args:
-            configs: List of MCP configurations
+            config: MCP configuration
             database_id: Optional database ID to inject into headers
         """
-        if not configs:
-            raise ValueError("At least one MCP configuration required")
+        if not config:
+            raise ValueError("MCP configuration required")
 
-        # Build server configurations
-        server_configs: dict[str, Mapping[str, Any]] = {}
+        # Build server configuration
+        connection: dict[str, Any] = {"transport": config.transport}
 
-        for config in configs:
-            connection: dict[str, Any] = {"transport": config.transport}
+        if config.url:
+            connection["url"] = config.url
+        if config.command:
+            connection["command"] = config.command
+        if config.args:
+            connection["args"] = config.args
 
-            if config.url:
-                connection["url"] = config.url
-            if config.command:
-                connection["command"] = config.command
-            if config.args:
-                connection["args"] = config.args
+        # Merge headers with database_id
+        headers = dict(config.headers) if config.headers else {}
+        if database_id and "x-database-id" not in headers:
+            headers["x-database-id"] = database_id
 
-            # Merge headers with database_id
-            headers = dict(config.headers) if config.headers else {}
-            if database_id and "x-database-id" not in headers:
-                headers["x-database-id"] = database_id
+        if headers:
+            connection["headers"] = headers
 
-            if headers:
-                connection["headers"] = headers
-
-            server_configs[config.name] = connection
-            self._configs[config.name] = config
+        server_configs: dict[str, Mapping[str, Any]] = {config.name: connection}
+        self._config = config
 
         # Create and connect client
         try:
-            # Type ignore: server_configs is structurally compatible with Connection type
             self._client = MultiServerMCPClient(server_configs)  # type: ignore[arg-type]
             raw_tools = await self._client.get_tools()
             
@@ -77,23 +73,17 @@ class MCPClientManager:
             
             # Check for ExceptionGroup (Python 3.11+)
             if hasattr(exc, 'exceptions'):
-                # Get first exception from group
                 if exc.exceptions:  # type: ignore[attr-defined]
                     root_cause = exc.exceptions[0]  # type: ignore[attr-defined]
             
-            # Walk the exception chain to find root cause
             while root_cause.__cause__ is not None:
                 root_cause = root_cause.__cause__
             
-            # Provide clear error message for connection failures
-            mcp_urls = [cfg.url for cfg in configs if cfg.url]
-            mcp_commands = [cfg.command for cfg in configs if cfg.command]
-            
-            error_parts = ["Failed to connect to MCP server(s):"]
-            if mcp_urls:
-                error_parts.append(f"  URLs: {', '.join(mcp_urls)}")
-            if mcp_commands:
-                error_parts.append(f"  Commands: {', '.join(mcp_commands)}")
+            error_parts = ["Failed to connect to MCP server:"]
+            if config.url:
+                error_parts.append(f"  URL: {config.url}")
+            if config.command:
+                error_parts.append(f"  Command: {config.command}")
             error_parts.append(f"  Cause: {type(root_cause).__name__}: {root_cause}")
             error_parts.append("")
             error_parts.append("  Make sure the MCP server is running and accessible.")
@@ -115,13 +105,13 @@ class MCPClientManager:
         return self._tools
 
     async def cleanup(self) -> None:
-        """Cleanup MCP connections.
+        """Cleanup MCP connection.
 
         Note: MultiServerMCPClient doesn't provide cleanup mechanism,
         so this is a no-op for now. Concurrency controlled via semaphore.
         """
         # MultiServerMCPClient doesn't have cleanup() or __aexit__
-        # Connections will be cleaned up when object is garbage collected
+        # Connection will be cleaned up when object is garbage collected
         pass
 
     @property
@@ -130,7 +120,7 @@ class MCPClientManager:
         return self._client is not None
 
     @property
-    def server_names(self) -> list[str]:
-        """Get list of connected server names."""
-        return list(self._configs.keys())
+    def server_name(self) -> Optional[str]:
+        """Get connected server name."""
+        return self._config.name if self._config else None
 

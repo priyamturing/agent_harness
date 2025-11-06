@@ -3,10 +3,9 @@
 from typing import Any, Optional
 
 from mcp_benchmark_sdk import RunObserver, VerifierResult
+from mcp_benchmark_sdk.harness.orchestrator import VerifierRunner
 from rich.console import Console
 from rich.table import Table
-
-from ..verifier_runner import VerifierRunner
 
 
 class ConsoleObserver(RunObserver):

@@ -9,9 +9,6 @@ DEFAULT_JIRA_MCP = MCPConfig(
     transport="streamable_http",
 )
 
-# Default SQL runner URL for verifiers
-DEFAULT_SQL_RUNNER_URL = "http://localhost:8015/api/sql-runner"
-
 # Maximum concurrent runs to prevent file descriptor exhaustion
 MAX_CONCURRENT_RUNS = 20
 

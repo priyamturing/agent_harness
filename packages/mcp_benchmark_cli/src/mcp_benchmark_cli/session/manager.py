@@ -80,15 +80,17 @@ class SessionManager:
         model_name: str,
         scenario_id: str,
         metadata: Optional[dict[str, Any]] = None,
+        verifier_results: Optional[list[Any]] = None,
     ) -> Path:
         """Save a single result to the session directory.
 
         Args:
             session_dir: Session directory
-            result: Result object
+            result: Result object (agent execution result)
             model_name: Model name
             scenario_id: Scenario ID
             metadata: Additional metadata
+            verifier_results: List of VerifierResult objects from harness
 
         Returns:
             Path to saved file
@@ -97,7 +99,7 @@ class SessionManager:
         conversation = result.get_conversation_history()
         
         # Build verifier results
-        verifier_results = [
+        verifier_results_json = [
             {
                 "name": vr.name,
                 "success": vr.success,
@@ -106,8 +108,8 @@ class SessionManager:
                 "comparison": vr.comparison_type,
                 "error": vr.error,
             }
-            for vr in result.verifier_results
-        ] if result.verifier_results else []
+            for vr in verifier_results
+        ] if verifier_results else []
         
         # Build artifact in OLD jira_mcp_benchmark format
         # conversation must be FIRST!
@@ -122,7 +124,7 @@ class SessionManager:
             "scenarios": [
                 {
                     "scenario_id": metadata.get("scenario_name", scenario_id) if metadata else scenario_id,
-                    "verifiers": verifier_results,
+                    "verifiers": verifier_results_json,
                 }
             ],
         }

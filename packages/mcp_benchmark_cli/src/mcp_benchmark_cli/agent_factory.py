@@ -2,7 +2,7 @@
 
 from typing import Any, Optional
 
-from mcp_benchmark_sdk import Agent, create_agent as sdk_create_agent
+from mcp_benchmark_sdk import Agent, create_agent as sdk_create_agent, with_tracing
 from .qwen_agent import QwenAgent
 from .prompts import PROJECT_MANAGEMENT_SYSTEM_PROMPT
 
@@ -48,7 +48,8 @@ def create_agent_from_string(
             **kwargs,
         )
     
-    return sdk_create_agent(
+    # Use SDK's create_agent and wrap with tracing if enabled
+    agent = sdk_create_agent(
         model=model,
         temperature=temperature,
         max_output_tokens=max_output_tokens,
@@ -56,6 +57,9 @@ def create_agent_from_string(
         system_prompt=system_prompt,
         **kwargs,
     )
+    
+    # Apply tracing wrapper if LangSmith is enabled
+    return with_tracing(agent)
 
 
 __all__ = ["create_agent_from_string"]

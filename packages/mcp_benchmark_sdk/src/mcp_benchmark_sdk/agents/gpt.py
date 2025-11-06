@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from langchain_openai import ChatOpenAI
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.runnables import Runnable
 
 from ..constants import (
     DEFAULT_LLM_MAX_RETRIES,
@@ -74,7 +75,7 @@ class GPTAgent(Agent):
         self.reasoning_effort = reasoning_effort
         self.extra_kwargs = kwargs
 
-    def _build_llm(self) -> BaseChatModel:
+    def _build_llm(self) -> Union[BaseChatModel, Runnable]:
         """Build OpenAI model with configuration."""
         # Normalize and configure model
         model_name = self.model
@@ -118,9 +119,11 @@ class GPTAgent(Agent):
         """Get GPT model response with retry logic."""
         if not self._llm:
             raise RuntimeError("LLM not initialized. Call initialize() first.")
+        
+        llm = self._llm  # Capture for type narrowing
 
         async def _invoke():
-            return await self._llm.ainvoke(messages)
+            return await llm.ainvoke(messages)
 
         ai_message = await retry_with_backoff(
             _invoke,

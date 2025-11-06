@@ -86,8 +86,7 @@ class RunResult:
 class TestHarnessConfig:
     """Configuration for test harness execution."""
 
-    mcps: list[MCPConfig]
-    sql_runner_url: Optional[str] = None
+    mcp: MCPConfig
     max_steps: int = 1000
     tool_call_limit: int = 1000
     temperature: float = 0.1
@@ -105,8 +104,7 @@ class TestHarness:
     harness = TestHarness(
         harness_path=Path("benchmarks/task1.json"),
         config=TestHarnessConfig(
-            mcps=[mcp_config],
-            sql_runner_url="http://localhost:8015/api/sql-runner",
+            mcp=mcp_config,
         )
     )
     
@@ -281,11 +279,9 @@ class TestHarness:
                     tool_call_limit=self.config.tool_call_limit,
                 )
 
-                task, verifier_defs = scenario_to_task(scenario, self.config.mcps)
+                task, verifier_defs = scenario_to_task(scenario, self.config.mcp)
 
-                run_context = RunContext(
-                    sql_runner_url=self.config.sql_runner_url,
-                )
+                run_context = RunContext()
 
                 for factory in self.observer_factories:
                     observer = factory()
@@ -293,10 +289,16 @@ class TestHarness:
                         observer.configure(run_config["label"], observer_config)  # type: ignore
                     run_context.add_observer(observer)
 
+                # Get MCP URL from config
+                if not self.config.mcp:
+                    raise ValueError("MCP configuration is required to run benchmarks")
+                mcp_url = self.config.mcp.url
+
                 verifier_runner = VerifierRunner(
                     verifier_defs,
                     run_context,
                     http_client=http_client,
+                    mcp_url=mcp_url,
                 )
 
                 result = await agent.run(
@@ -306,8 +308,6 @@ class TestHarness:
                 )
 
                 verifier_results = await verifier_runner.run_verifiers()
-
-                result.verifier_results = verifier_results
 
                 all_verifiers_passed = (
                     all(v.success for v in verifier_results) if verifier_results else True
@@ -360,23 +360,25 @@ class VerifierRunner:
         verifier_defs: list[VerifierDefinition],
         run_context: RunContext,
         http_client: httpx.AsyncClient,
+        mcp_url: Optional[str] = None,
     ):
         """Initialize verifier runner.
         
         Args:
             verifier_defs: List of verifier definitions from harness
-            run_context: Runtime context with SQL runner URL and database ID
+            run_context: Runtime context with database ID
             http_client: Shared HTTP client (managed by caller)
+            mcp_url: MCP server URL (used to derive SQL runner URL)
         """
         self.verifiers: list[Verifier] = []
         
-        if not verifier_defs or not run_context.sql_runner_url:
+        if not verifier_defs or not mcp_url:
             return
         
         self.verifiers = [
             create_verifier_from_definition(
                 verifier_def,
-                run_context.sql_runner_url,
+                mcp_url,
                 run_context.database_id,
                 http_client,
             )

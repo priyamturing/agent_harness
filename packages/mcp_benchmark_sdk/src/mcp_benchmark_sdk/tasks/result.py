@@ -39,11 +39,14 @@ class AgentResponse:
 
 @dataclass
 class Result:
-    """Final execution result from running a task."""
+    """Final execution result from running a task.
+    
+    This represents the agent's execution result only.
+    Verifier results are managed separately by the harness layer.
+    """
 
     success: bool
     messages: list[Any]
-    verifier_results: list[Any] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     database_id: Optional[str] = None
     reasoning_traces: list[str] = field(default_factory=list)
@@ -93,7 +96,7 @@ class Result:
                 
                 # Add AI message if it has content or reasoning
                 if content_text or reasoning_blocks:
-                    entry = {
+                    entry: dict[str, Any] = {
                         "type": "message",
                         "role": "assistant",
                     }

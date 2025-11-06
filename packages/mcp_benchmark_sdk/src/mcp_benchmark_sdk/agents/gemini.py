@@ -3,17 +3,41 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Optional
+import sys
+import warnings
+from contextlib import contextmanager
+from io import StringIO
+from typing import Any, Optional, Union
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.runnables import Runnable
 
 from ..constants import DEFAULT_LLM_TIMEOUT_SECONDS, DEFAULT_TOOL_CALL_LIMIT
 from ..parsers import GoogleResponseParser, ResponseParser
 from ..tasks import AgentResponse
 from ..utils import retry_with_backoff
 from .base import Agent
+
+
+@contextmanager
+def _suppress_schema_warnings():
+    """Suppress Google GenAI schema warnings during tool binding."""
+    # Suppress Python warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*additionalProperties.*")
+        
+        # Suppress stdout/stderr (for print statements in the library)
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        try:
+            sys.stdout = StringIO()
+            sys.stderr = StringIO()
+            yield
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
 
 
 class GeminiAgent(Agent):
@@ -63,7 +87,7 @@ class GeminiAgent(Agent):
         self.include_thoughts = include_thoughts
         self.extra_kwargs = kwargs
 
-    def _build_llm(self) -> BaseChatModel:
+    def _build_llm(self) -> Union[BaseChatModel, Runnable]:
         """Build Gemini model with configuration."""
         config: dict[str, Any] = {
             "model": self.model,
@@ -91,15 +115,22 @@ class GeminiAgent(Agent):
         config.update(self.extra_kwargs)
 
         llm = ChatGoogleGenerativeAI(**config)
-        return llm.bind_tools(self._tools) if self._tools else llm
+        
+        # Suppress schema warnings when binding tools (Google GenAI prints warnings about additionalProperties)
+        if self._tools:
+            with _suppress_schema_warnings():
+                return llm.bind_tools(self._tools)
+        return llm
 
     async def get_response(self, messages: list[BaseMessage]) -> tuple[AgentResponse, AIMessage]:
         """Get Gemini model response with retry logic."""
         if not self._llm:
             raise RuntimeError("LLM not initialized. Call initialize() first.")
+        
+        llm = self._llm  # Capture for type narrowing
 
         async def _invoke():
-            return await self._llm.ainvoke(messages)
+            return await llm.ainvoke(messages)
 
         ai_message = await retry_with_backoff(
             _invoke,

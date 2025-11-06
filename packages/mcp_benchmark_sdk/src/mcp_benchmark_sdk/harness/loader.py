@@ -129,7 +129,7 @@ def load_harness_directory(directory: Path) -> dict[str, list[Scenario]]:
 
 def scenario_to_task(
     scenario: Scenario,
-    mcps: list[MCPConfig],
+    mcp: MCPConfig,
     database_id: Optional[str] = None,
 ) -> tuple[Task, list[VerifierDefinition]]:
     """Convert Scenario to SDK Task and verifier definitions.
@@ -138,12 +138,12 @@ def scenario_to_task(
     allowing orchestrators to control when and how verification happens.
     
     Returns verifier definitions instead of instantiated verifiers since
-    verifiers need runtime context (sql_runner_url, database_id, http_client)
+    verifiers need runtime context (mcp_url, database_id, http_client)
     which is only available during execution.
 
     Args:
         scenario: Scenario from harness file
-        mcps: List of MCP configurations
+        mcp: MCP configuration
         database_id: Optional database ID for isolation
 
     Returns:
@@ -162,7 +162,7 @@ def scenario_to_task(
 
     task = Task(
         prompt=prompt_text,
-        mcps=mcps,
+        mcp=mcp,
         metadata={
             "scenario_id": scenario.scenario_id,
             "scenario_name": scenario.name,
@@ -179,7 +179,7 @@ def scenario_to_task(
 
 def create_verifier_from_definition(
     verifier_def: VerifierDefinition,
-    sql_runner_url: str,
+    mcp_url: str,
     database_id: str,
     http_client: httpx.AsyncClient,
 ) -> Verifier:
@@ -187,7 +187,7 @@ def create_verifier_from_definition(
 
     Args:
         verifier_def: Verifier definition from harness
-        sql_runner_url: SQL runner endpoint URL
+        mcp_url: MCP server URL (SQL runner URL will be derived from this)
         database_id: Database ID for isolation
         http_client: HTTP client for making requests
 
@@ -212,7 +212,7 @@ def create_verifier_from_definition(
         return DatabaseVerifier(
             query=query,
             expected_value=expected_value,
-            sql_runner_url=sql_runner_url,
+            mcp_url=mcp_url,
             database_id=database_id,
             comparison=comparison,
             name=verifier_def.name,
