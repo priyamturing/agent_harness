@@ -10,14 +10,18 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 
+from ..constants import (
+    DEFAULT_LLM_MAX_RETRIES,
+    DEFAULT_LLM_TIMEOUT_SECONDS,
+    DEFAULT_TOOL_CALL_LIMIT,
+    THINKING_DEFAULT_BUDGET_TOKENS,
+    THINKING_DEFAULT_OUTPUT_TOKENS,
+    THINKING_SAFETY_MARGIN_TOKENS,
+)
 from ..parsers import AnthropicResponseParser, ResponseParser
 from ..tasks import AgentResponse
 from ..utils import retry_with_backoff
-from .base import Agent, _DEFAULT_LLM_TIMEOUT_SECONDS
-
-# Claude thinking mode token configuration
-_THINKING_SAFETY_MARGIN_TOKENS = 1000  # Extra tokens above thinking budget for output
-_THINKING_DEFAULT_OUTPUT_TOKENS = 8192  # Default output tokens when no max specified
+from .base import Agent
 
 
 class ClaudeAgent(Agent):
@@ -35,9 +39,9 @@ class ClaudeAgent(Agent):
         temperature: float = 1.0,
         max_output_tokens: Optional[int] = None,
         enable_thinking: bool = True,
-        thinking_budget_tokens: int = 42000,
+        thinking_budget_tokens: int = THINKING_DEFAULT_BUDGET_TOKENS,
         system_prompt: Optional[str] = None,
-        tool_call_limit: Optional[int] = 1000,
+        tool_call_limit: Optional[int] = DEFAULT_TOOL_CALL_LIMIT,
         **kwargs,
     ):
         """Initialize Claude agent.
@@ -94,7 +98,7 @@ class ClaudeAgent(Agent):
             "model": model_name,
             "temperature": self.temperature,
             "timeout": None,
-            "max_retries": 3,
+            "max_retries": DEFAULT_LLM_MAX_RETRIES,
         }
 
         # Enable thinking for supported models
@@ -116,10 +120,10 @@ class ClaudeAgent(Agent):
             if self.max_output_tokens is not None:
                 config["max_tokens"] = max(
                     self.max_output_tokens,
-                    self.thinking_budget_tokens + _THINKING_SAFETY_MARGIN_TOKENS
+                    self.thinking_budget_tokens + THINKING_SAFETY_MARGIN_TOKENS
                 )
             else:
-                config["max_tokens"] = self.thinking_budget_tokens + _THINKING_DEFAULT_OUTPUT_TOKENS
+                config["max_tokens"] = self.thinking_budget_tokens + THINKING_DEFAULT_OUTPUT_TOKENS
         elif self.max_output_tokens is not None:
             config["max_tokens"] = self.max_output_tokens
 
@@ -140,7 +144,7 @@ class ClaudeAgent(Agent):
         ai_message = await retry_with_backoff(
             _invoke,
             max_retries=2,
-            timeout_seconds=_DEFAULT_LLM_TIMEOUT_SECONDS,
+            timeout_seconds=DEFAULT_LLM_TIMEOUT_SECONDS,
             on_retry=lambda attempt, exc, delay: None,  # Could log via RunContext
         )
 

@@ -9,10 +9,15 @@ from langchain_xai import ChatXAI
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 
+from ..constants import (
+    DEFAULT_LLM_MAX_RETRIES,
+    DEFAULT_LLM_TIMEOUT_SECONDS,
+    DEFAULT_TOOL_CALL_LIMIT,
+)
 from ..parsers import XAIResponseParser, ResponseParser
 from ..tasks import AgentResponse
 from ..utils import retry_with_backoff
-from .base import Agent, _DEFAULT_LLM_TIMEOUT_SECONDS
+from .base import Agent
 
 
 class GrokAgent(Agent):
@@ -29,7 +34,7 @@ class GrokAgent(Agent):
         temperature: float = 0.1,
         max_output_tokens: Optional[int] = None,
         system_prompt: Optional[str] = None,
-        tool_call_limit: Optional[int] = 1000,
+        tool_call_limit: Optional[int] = DEFAULT_TOOL_CALL_LIMIT,
         **kwargs,
     ):
         """Initialize Grok agent.
@@ -62,7 +67,7 @@ class GrokAgent(Agent):
             "model": self.model,
             "temperature": self.temperature,
             "timeout": None,
-            "max_retries": 3,
+            "max_retries": DEFAULT_LLM_MAX_RETRIES,
         }
 
         if self.max_output_tokens is not None:
@@ -97,7 +102,7 @@ class GrokAgent(Agent):
         ai_message = await retry_with_backoff(
             _invoke,
             max_retries=2,
-            timeout_seconds=_DEFAULT_LLM_TIMEOUT_SECONDS,
+            timeout_seconds=DEFAULT_LLM_TIMEOUT_SECONDS,
             on_retry=lambda attempt, exc, delay: None,
         )
 

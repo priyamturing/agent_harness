@@ -47,7 +47,10 @@ class XAIResponseParser:
                     summary = block.get("summary")
                     if summary:
                         raw_reasoning.append(format_json({"summary": summary}))
-                    collect_reasoning_chunks(block, reasoning_chunks)
+                    try:
+                        collect_reasoning_chunks(block, reasoning_chunks)
+                    except RecursionError as e:
+                        reasoning_chunks.append(f"[Error: {e}]")
 
                 # Thinking blocks
                 elif block_type == "thinking":
@@ -70,7 +73,10 @@ class XAIResponseParser:
                     summary = extra_reasoning.get("summary")
                     if summary:
                         raw_reasoning.append(format_json({"summary": summary}))
-                collect_reasoning_chunks(extra_reasoning, reasoning_chunks)
+                try:
+                    collect_reasoning_chunks(extra_reasoning, reasoning_chunks)
+                except RecursionError as e:
+                    reasoning_chunks.append(f"[Error: {e}]")
 
         # Extract tool calls
         tool_calls = []

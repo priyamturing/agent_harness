@@ -53,7 +53,6 @@ graph TB
     end
 
     subgraph "Task Management"
-        SCENARIO[Scenario]
         RESULT[Result]
         AGENT_RESPONSE[AgentResponse]
     end
@@ -148,9 +147,9 @@ Defines the benchmark task structure:
   - Verifier results (can be enriched post-execution by orchestrators)
   - Metadata
 
-- **Scenario**: Advanced task with multiple prompts for conversation mode
-
 - **AgentResponse**: Structured agent turn with messages and tool calls
+
+Note: Scenario, ScenarioPrompt, and VerifierDefinition are CLI-specific types for loading harness files, not part of the SDK runtime.
 
 ### 3. Runtime Layer
 **Location**: `runtime/`
@@ -241,18 +240,10 @@ Agents have zero knowledge of verifiers - verification is orchestrated externall
   - Supports complex assertions
   - Can be used by any orchestrator
 
-- **Verifier Executor**: Batch execution utility
-  - `execute_verifiers()` - Standalone function
-  - Runs multiple verifiers
-  - Manages HTTP client lifecycle
-  - Aggregates results
-  - No agent dependencies
-
-**VerificationContext**:
-- SQL runner URL
-- Database ID (isolation)
-- HTTP client
-- Used by verifiers, independent of agent execution
+- **CLI Verifier Runner**: Orchestrates verification outside SDK
+  - Builds verifiers from harness definitions at runtime
+  - Manages HTTP client lifecycle per verification run
+  - Aggregates results for observers/UI
 
 ### 7. Utils
 **Location**: `utils/`
@@ -384,7 +375,7 @@ print(result.success)
 ### Advanced Usage - With Verification (Orchestrator Pattern)
 ```python
 from mcp_benchmark_sdk import Task, ClaudeAgent, MCPConfig, RunContext
-from mcp_benchmark_sdk.verifiers import DatabaseVerifier, execute_verifiers
+from mcp_benchmark_sdk.verifiers import DatabaseVerifier
 
 # Define task (no verifiers)
 task = Task(
@@ -392,23 +383,25 @@ task = Task(
     mcps=[MCPConfig(command="jira-mcp", args=[])],
 )
 
-# Define verifiers separately
-verifiers = [
-    DatabaseVerifier(query="SELECT COUNT(*) FROM issues", expected_value=1)
-]
-
 # Run agent
 agent = ClaudeAgent()
 async with RunContext(sql_runner_url="http://localhost:8080") as ctx:
     result = await agent.run(task, run_context=ctx)
     
-    # Orchestrate verification separately
-    verifier_results = await execute_verifiers(
-        verifiers,
-        ctx.sql_runner_url,
-        ctx.database_id,
-        ctx.get_http_client(),
-    )
+    # Build verifiers using runtime context
+    verifiers = [
+        DatabaseVerifier(
+            query="SELECT COUNT(*) FROM issues",
+            expected_value=1,
+            sql_runner_url=ctx.sql_runner_url,
+            database_id=ctx.database_id,
+        )
+    ]
+    
+    # Run verifiers
+    verifier_results = []
+    for verifier in verifiers:
+        verifier_results.append(await verifier.verify())
     
     # Merge results
     result.verifier_results = verifier_results
@@ -427,17 +420,13 @@ class MyObserver(RunObserver):
     async def on_tool_call(self, tool_name, arguments, result, is_error):
         print(f"Tool: {tool_name}({arguments}) -> {result}")
     
-    async def on_verifier_update(self, results):
-        print(f"Verifiers: {results}")
+    async def on_status(self, message, level="info"):
+        print(f"[{level}] {message}")
 
 # Agent execution with observation
 async with RunContext() as ctx:
     ctx.add_observer(MyObserver())
     result = await agent.run(task, run_context=ctx)
-    
-    # Verification can also be observed
-    verifier_results = await execute_verifiers(verifiers, ctx.sql_runner_url, ctx.database_id, ctx.get_http_client())
-    await ctx.notify_verifier_update(verifier_results)
 ```
 
 ### Custom Agent (Low-Level)
@@ -523,7 +512,7 @@ They have no knowledge of agents.
 1. Create verifier in `verifiers/`:
 ```python
 class MyVerifier(Verifier):
-    async def verify(self, context: VerificationContext) -> VerifierResult:
+    async def verify(self) -> VerifierResult:
         # Custom verification logic
         # No agent dependencies - pure utility
         return VerifierResult(...)
@@ -534,7 +523,7 @@ class MyVerifier(Verifier):
 3. Use in orchestrator (e.g., CLI):
 ```python
 verifier = MyVerifier(...)
-results = await execute_verifiers([verifier], sql_url, db_id, http_client)
+result = await verifier.verify()
 ```
 
 ### Adding Custom Observers

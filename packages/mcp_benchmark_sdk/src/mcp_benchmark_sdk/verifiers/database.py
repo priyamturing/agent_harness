@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 import httpx
 
+from ..constants import DATABASE_VERIFIER_TIMEOUT_SECONDS
 from .base import Verifier, VerifierResult
 
 
@@ -187,7 +188,7 @@ class DatabaseVerifier(Verifier):
         http_client = self._http_client
         
         if http_client is None:
-            http_client = httpx.AsyncClient(timeout=30.0)
+            http_client = httpx.AsyncClient(timeout=DATABASE_VERIFIER_TIMEOUT_SECONDS)
         
         try:
             response = await http_client.post(

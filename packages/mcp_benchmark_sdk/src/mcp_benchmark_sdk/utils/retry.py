@@ -6,6 +6,13 @@ from typing import Any, Callable, Optional, TypeVar
 
 import httpx
 
+from ..constants import (
+    RETRY_BASE_DELAY_SECONDS,
+    RETRY_DEFAULT_MAX_ATTEMPTS,
+    RETRY_MAX_DELAY_SECONDS,
+    RETRY_TRANSIENT_STATUS_CODES,
+)
+
 try:
     from anthropic import errors as anthropic_errors  # type: ignore
 except ImportError:
@@ -13,12 +20,8 @@ except ImportError:
 
 T = TypeVar("T")
 
-_BASE_RETRY_DELAY_SECONDS = 1.0
-_MAX_RETRY_DELAY_SECONDS = 30.0
-_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 
-
-def compute_retry_delay(attempt: int, base_delay: float = _BASE_RETRY_DELAY_SECONDS) -> float:
+def compute_retry_delay(attempt: int, base_delay: float = RETRY_BASE_DELAY_SECONDS) -> float:
     """Calculate exponential backoff with jitter.
 
     Args:
@@ -30,7 +33,7 @@ def compute_retry_delay(attempt: int, base_delay: float = _BASE_RETRY_DELAY_SECO
     """
     exponential = base_delay * (2 ** (attempt - 1))
     jitter = random.uniform(0, base_delay)
-    return min(_MAX_RETRY_DELAY_SECONDS, exponential + jitter)
+    return min(RETRY_MAX_DELAY_SECONDS, exponential + jitter)
 
 
 def _extract_status_code(exc: Exception) -> Optional[int]:
@@ -52,7 +55,7 @@ def _extract_status_code(exc: Exception) -> Optional[int]:
 def should_retry_error(exc: Exception) -> bool:
     """Determine if an exception is likely transient and should be retried."""
     status_code = _extract_status_code(exc)
-    if status_code in _TRANSIENT_STATUS_CODES:
+    if status_code in RETRY_TRANSIENT_STATUS_CODES:
         return True
 
     # Anthropic-specific errors
@@ -68,13 +71,13 @@ def should_retry_error(exc: Exception) -> bool:
         if hasattr(anthropic_errors, "APIError") and isinstance(
             exc, getattr(anthropic_errors, "APIError")
         ):
-            if status_code in _TRANSIENT_STATUS_CODES:
+            if status_code in RETRY_TRANSIENT_STATUS_CODES:
                 return True
 
     # HTTP errors
     if isinstance(exc, httpx.RequestError):
         return True
-    if isinstance(exc, httpx.HTTPStatusError) and status_code in _TRANSIENT_STATUS_CODES:
+    if isinstance(exc, httpx.HTTPStatusError) and status_code in RETRY_TRANSIENT_STATUS_CODES:
         return True
 
     # Check message for hints
@@ -92,7 +95,7 @@ def should_retry_error(exc: Exception) -> bool:
 
 async def retry_with_backoff(
     func: Callable[..., Any],
-    max_retries: int = 2,
+    max_retries: int = RETRY_DEFAULT_MAX_ATTEMPTS,
     timeout_seconds: Optional[float] = None,
     on_retry: Optional[Callable[[int, Exception, float], None]] = None,
 ) -> Any:

@@ -64,12 +64,41 @@ class MCPClientManager:
             self._configs[config.name] = config
 
         # Create and connect client
-        # Type ignore: server_configs is structurally compatible with Connection type
-        self._client = MultiServerMCPClient(server_configs)  # type: ignore[arg-type]
-        raw_tools = await self._client.get_tools()
-        
-        # Fix tools with reserved keyword parameters
-        self._tools = fix_tool_schemas(raw_tools)
+        try:
+            # Type ignore: server_configs is structurally compatible with Connection type
+            self._client = MultiServerMCPClient(server_configs)  # type: ignore[arg-type]
+            raw_tools = await self._client.get_tools()
+            
+            # Fix tools with reserved keyword parameters
+            self._tools = fix_tool_schemas(raw_tools)
+        except Exception as exc:
+            # Extract root cause from exception chain/groups
+            root_cause = exc
+            
+            # Check for ExceptionGroup (Python 3.11+)
+            if hasattr(exc, 'exceptions'):
+                # Get first exception from group
+                if exc.exceptions:  # type: ignore[attr-defined]
+                    root_cause = exc.exceptions[0]  # type: ignore[attr-defined]
+            
+            # Walk the exception chain to find root cause
+            while root_cause.__cause__ is not None:
+                root_cause = root_cause.__cause__
+            
+            # Provide clear error message for connection failures
+            mcp_urls = [cfg.url for cfg in configs if cfg.url]
+            mcp_commands = [cfg.command for cfg in configs if cfg.command]
+            
+            error_parts = ["Failed to connect to MCP server(s):"]
+            if mcp_urls:
+                error_parts.append(f"  URLs: {', '.join(mcp_urls)}")
+            if mcp_commands:
+                error_parts.append(f"  Commands: {', '.join(mcp_commands)}")
+            error_parts.append(f"  Cause: {type(root_cause).__name__}: {root_cause}")
+            error_parts.append("")
+            error_parts.append("  Make sure the MCP server is running and accessible.")
+            
+            raise ConnectionError("\n".join(error_parts)) from exc
 
     def get_all_tools(self) -> list[BaseTool]:
         """Get all tools from all connected servers.

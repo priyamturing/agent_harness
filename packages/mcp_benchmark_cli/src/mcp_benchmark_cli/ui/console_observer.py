@@ -2,8 +2,7 @@
 
 from typing import Any, Optional
 
-from mcp_benchmark_sdk import RunContext, RunObserver, VerifierResult
-from mcp_benchmark_sdk.tasks.scenario import VerifierDefinition
+from mcp_benchmark_sdk import RunObserver, VerifierResult
 from rich.console import Console
 from rich.table import Table
 
@@ -17,25 +16,20 @@ class ConsoleObserver(RunObserver):
         self,
         console: Optional[Console] = None,
         prefix: Optional[str] = None,
-        verifier_defs: Optional[list[VerifierDefinition]] = None,
-        run_context: Optional[RunContext] = None,
+        verifier_runner: Optional[VerifierRunner] = None,
     ):
         """Initialize console observer.
 
         Args:
             console: Rich console instance (created if not provided)
             prefix: Optional prefix for all output
-            verifier_defs: Optional list of verifier definitions to run after each tool call
-            run_context: Optional runtime context for running verifiers
+            verifier_runner: Optional verifier runner for continuous verification
         """
         self.console = console or Console()
         self.prefix = prefix
         
-        # Verification support (optional)
-        self.verifier_runner = (
-            VerifierRunner(verifier_defs, run_context) 
-            if verifier_defs and run_context else None
-        )
+        # Verification support (optional, injected)
+        self.verifier_runner = verifier_runner
 
     def _emit_prefix(self) -> None:
         """Emit prefix if set."""

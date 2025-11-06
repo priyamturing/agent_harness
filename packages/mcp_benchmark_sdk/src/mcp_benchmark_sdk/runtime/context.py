@@ -6,13 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 from uuid import uuid4
 
-import httpx
-
-from .events import NoOpObserver, RunObserver
-
-# HTTP client timeout configuration (used for database verifiers)
-_DEFAULT_HTTP_TIMEOUT = 30.0  # Overall timeout in seconds
-_DEFAULT_HTTP_CONNECT_TIMEOUT = 10.0  # Connection timeout in seconds
+from .events import RunObserver
 
 
 @dataclass
@@ -22,7 +16,6 @@ class RunContext:
     Centralizes:
     - Unique database ID per run
     - SQL runner URL for verifiers
-    - Shared HTTP client
     - Event observers for logging/telemetry
     
     Can be used as an async context manager for automatic cleanup:
@@ -35,7 +28,6 @@ class RunContext:
 
     database_id: str = field(default_factory=lambda: str(uuid4()))
     sql_runner_url: Optional[str] = None
-    http_client: Optional[httpx.AsyncClient] = None
     observers: list[RunObserver] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -71,33 +63,9 @@ class RunContext:
         for observer in self.observers:
             await observer.on_status(message, level)
 
-    def get_http_client(self) -> httpx.AsyncClient:
-        """Get or create the HTTP client.
-        
-        Returns:
-            Active httpx.AsyncClient instance
-            
-        Note:
-            If the client was closed externally without being set to None,
-            this method will detect it and create a new client.
-        """
-        if self.http_client is None:
-            self.http_client = httpx.AsyncClient(
-                timeout=httpx.Timeout(_DEFAULT_HTTP_TIMEOUT, connect=_DEFAULT_HTTP_CONNECT_TIMEOUT)
-            )
-        elif self.http_client.is_closed:
-            # Client was closed externally without being set to None
-            # Recreate it instead of returning closed client
-            self.http_client = httpx.AsyncClient(
-                timeout=httpx.Timeout(_DEFAULT_HTTP_TIMEOUT, connect=_DEFAULT_HTTP_CONNECT_TIMEOUT)
-            )
-        return self.http_client
-
     async def cleanup(self) -> None:
-        """Cleanup resources (HTTP client, etc.)."""
-        if self.http_client is not None:
-            await self.http_client.aclose()
-            self.http_client = None
+        """Cleanup resources (no-op placeholder)."""
+        return None
     
     async def __aenter__(self) -> "RunContext":
         """Enter async context manager."""

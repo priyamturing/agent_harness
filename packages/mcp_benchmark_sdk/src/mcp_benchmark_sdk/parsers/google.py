@@ -59,7 +59,10 @@ class GoogleResponseParser:
         if hasattr(message, "additional_kwargs"):
             thoughts = message.additional_kwargs.get("thoughts")
             if thoughts:
-                collect_reasoning_chunks(thoughts, reasoning_chunks)
+                try:
+                    collect_reasoning_chunks(thoughts, reasoning_chunks)
+                except RecursionError as e:
+                    reasoning_chunks.append(f"[Error: {e}]")
                 raw_reasoning.append(format_json({"thoughts": thoughts}))
 
         # Extract tool calls

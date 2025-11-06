@@ -9,12 +9,11 @@ from typing import Any, Optional
 from mcp_benchmark_sdk import (
     DatabaseVerifier,
     MCPConfig,
-    Scenario,
-    ScenarioPrompt,
     Task,
     Verifier,
 )
-from mcp_benchmark_sdk.tasks.scenario import VerifierDefinition
+
+from .scenario import Scenario, ScenarioPrompt, VerifierDefinition
 
 
 def load_harness_file(path: Path) -> list[Scenario]:

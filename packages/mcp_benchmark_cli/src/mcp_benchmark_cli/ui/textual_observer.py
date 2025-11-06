@@ -4,8 +4,7 @@ import asyncio
 import json
 from typing import Any, Optional
 
-from mcp_benchmark_sdk import RunContext, RunObserver, VerifierResult
-from mcp_benchmark_sdk.tasks.scenario import VerifierDefinition
+from mcp_benchmark_sdk import RunObserver, VerifierResult
 
 from ..verifier_runner import VerifierRunner
 
@@ -33,16 +32,14 @@ class TextualObserver(RunObserver):
         self,
         queue: asyncio.Queue,
         width: int = 100,
-        verifier_defs: Optional[list[VerifierDefinition]] = None,
-        run_context: Optional[RunContext] = None,
+        verifier_runner: Optional[VerifierRunner] = None,
     ):
         """Initialize textual observer.
 
         Args:
             queue: Queue to send messages to Textual app
             width: Console width (not used, kept for compatibility)
-            verifier_defs: Optional list of verifier definitions to run after each tool call
-            run_context: Optional runtime context for running verifiers
+            verifier_runner: Optional verifier runner for continuous verification
         """
         self._queue = queue
         self._artifacts: dict[str, list] = {
@@ -54,11 +51,8 @@ class TextualObserver(RunObserver):
         self._drop_count = 0
         self._last_drop_warning = 0
         
-        # Verification support (optional)
-        self.verifier_runner = (
-            VerifierRunner(verifier_defs, run_context)
-            if verifier_defs and run_context else None
-        )
+        # Verification support (optional, injected)
+        self.verifier_runner = verifier_runner
 
     def _enqueue(self, text: str) -> None:
         """Send text directly to queue (RichLog handles markup)."""

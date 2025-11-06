@@ -9,10 +9,11 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 
+from ..constants import DEFAULT_LLM_TIMEOUT_SECONDS, DEFAULT_TOOL_CALL_LIMIT
 from ..parsers import GoogleResponseParser, ResponseParser
 from ..tasks import AgentResponse
 from ..utils import retry_with_backoff
-from .base import Agent, _DEFAULT_LLM_TIMEOUT_SECONDS
+from .base import Agent
 
 
 class GeminiAgent(Agent):
@@ -31,7 +32,7 @@ class GeminiAgent(Agent):
         thinking_budget: Optional[int] = None,
         include_thoughts: bool = True,
         system_prompt: Optional[str] = None,
-        tool_call_limit: Optional[int] = 1000,
+        tool_call_limit: Optional[int] = DEFAULT_TOOL_CALL_LIMIT,
         **kwargs,
     ):
         """Initialize Gemini agent.
@@ -103,7 +104,7 @@ class GeminiAgent(Agent):
         ai_message = await retry_with_backoff(
             _invoke,
             max_retries=2,
-            timeout_seconds=_DEFAULT_LLM_TIMEOUT_SECONDS,
+            timeout_seconds=DEFAULT_LLM_TIMEOUT_SECONDS,
             on_retry=lambda attempt, exc, delay: None,
         )
 

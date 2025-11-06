@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+import httpx
 # Suppress transformers warning (imported by langchain_anthropic)
 os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
 
@@ -307,90 +308,98 @@ async def run_all_plain(
     session_mgr = SessionManager(RESULTS_ROOT)
     run_summaries = []
     
-    for cfg in run_configs:
-        console.print(f"\n[bold cyan]Running:[/bold cyan] {cfg['label']}")
-        
-        try:
-            # Create agent
-            agent = create_agent_from_string(
-                cfg["model"],
-                temperature=temperature,
-                max_output_tokens=max_output_tokens,
-                tool_call_limit=tool_call_limit,
-            )
+    # Create shared HTTP client for all verification runs
+    import httpx
+    async with httpx.AsyncClient(timeout=30.0) as shared_http_client:
+        for cfg in run_configs:
+            console.print(f"\n[bold cyan]Running:[/bold cyan] {cfg['label']}")
             
-            # Convert scenario to task and extract verifier definitions separately
-            task, verifier_defs = scenario_to_task(cfg["scenario"], [mcp_config])
-            
-            # Create RunContext
-            run_context = RunContext(sql_runner_url=sql_runner_url)
-            
-            # Add console observer for output (with optional verifier definitions)
-            observer = ConsoleObserver(
-                console=console,
-                prefix=cfg["label"],
-                verifier_defs=verifier_defs,
-                run_context=run_context,
-            )
-            run_context.add_observer(observer)
-            
-            # Run agent (with continuous verification via observer)
-            result = await agent.run(task, max_steps=max_steps, run_context=run_context)
-            
-            # Run verification separately (CLI orchestrates this)
-            verifier_runner = VerifierRunner(verifier_defs, run_context)
-            verifier_results = await verifier_runner.run_verifiers()
-            
-            # Enrich result with verifier results
-            result.verifier_results = verifier_results
-            
-            # Determine final success
-            all_verifiers_passed = all(v.success for v in verifier_results) if verifier_results else True
-            final_success = result.success and all_verifiers_passed
-            
-            # Update result with final status
-            if not all_verifiers_passed:
-                failed = [v.name for v in verifier_results if not v.success]
-                result.error = f"Verifiers failed: {', '.join(failed)}"
-            
-            result.success = final_success
-            
-            # Save result
-            result_file = session_mgr.save_result(
-                session_dir,
-                result,
-                cfg["model"],
-                f"{cfg['batch_alias']}_{cfg['scenario'].scenario_id}_run{cfg['run_num']}",
-                metadata={
-                    "scenario_name": cfg["scenario"].name,
-                    "temperature": temperature,
-                    "run_number": cfg["run_num"],
-                },
-            )
-            
-            run_summaries.append({
-                "model": cfg["model"],
-                "scenario_id": cfg["scenario"].scenario_id,
-                "run_number": cfg["run_num"],
-                "success": result.success,
-                "file": str(result_file.relative_to(session_dir)),
-            })
-            
-            if result.success:
-                console.print("[bold green]✓ Success[/bold green]")
-            else:
-                console.print(f"[bold red]✗ Failed:[/bold red] {result.error}")
+            try:
+                # Create agent
+                agent = create_agent_from_string(
+                    cfg["model"],
+                    temperature=temperature,
+                    max_output_tokens=max_output_tokens,
+                    tool_call_limit=tool_call_limit,
+                )
                 
-        except Exception as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            run_summaries.append({
-                "model": cfg["model"],
-                "scenario_id": cfg["scenario"].scenario_id,
-                "run_number": cfg["run_num"],
-                "success": False,
-                "file": "",
-                "error": str(exc),
-            })
+                # Convert scenario to task and extract verifier definitions separately
+                task, verifier_defs = scenario_to_task(cfg["scenario"], [mcp_config])
+                
+                # Create RunContext
+                run_context = RunContext(sql_runner_url=sql_runner_url)
+                
+                # Create verifier runner with shared HTTP client
+                verifier_runner = VerifierRunner(
+                    verifier_defs,
+                    run_context,
+                    http_client=shared_http_client,
+                )
+                
+                # Add console observer for output (with injected verifier runner)
+                observer = ConsoleObserver(
+                    console=console,
+                    prefix=cfg["label"],
+                    verifier_runner=verifier_runner,
+                )
+                run_context.add_observer(observer)
+                
+                # Run agent (with continuous verification via observer)
+                result = await agent.run(task, max_steps=max_steps, run_context=run_context)
+                
+                # Run final verification (reuses same runner)
+                verifier_results = await verifier_runner.run_verifiers()
+                
+                # Enrich result with verifier results
+                result.verifier_results = verifier_results
+                
+                # Determine final success
+                all_verifiers_passed = all(v.success for v in verifier_results) if verifier_results else True
+                final_success = result.success and all_verifiers_passed
+                
+                # Update result with final status
+                if not all_verifiers_passed:
+                    failed = [v.name for v in verifier_results if not v.success]
+                    result.error = f"Verifiers failed: {', '.join(failed)}"
+                
+                result.success = final_success
+                
+                # Save result
+                result_file = session_mgr.save_result(
+                    session_dir,
+                    result,
+                    cfg["model"],
+                    f"{cfg['batch_alias']}_{cfg['scenario'].scenario_id}_run{cfg['run_num']}",
+                    metadata={
+                        "scenario_name": cfg["scenario"].name,
+                        "temperature": temperature,
+                        "run_number": cfg["run_num"],
+                    },
+                )
+                
+                run_summaries.append({
+                    "model": cfg["model"],
+                    "scenario_id": cfg["scenario"].scenario_id,
+                    "run_number": cfg["run_num"],
+                    "success": result.success,
+                    "file": str(result_file.relative_to(session_dir)),
+                })
+                
+                if result.success:
+                    console.print("[bold green]✓ Success[/bold green]")
+                else:
+                    console.print(f"[bold red]✗ Failed:[/bold red] {result.error}")
+                    
+            except Exception as exc:
+                console.print(f"[red]Error:[/red] {exc}")
+                run_summaries.append({
+                    "model": cfg["model"],
+                    "scenario_id": cfg["scenario"].scenario_id,
+                    "run_number": cfg["run_num"],
+                    "success": False,
+                    "file": "",
+                    "error": str(exc),
+                })
     
     # Save manifest and print summary
     session_mgr.save_session_manifest(session_dir, run_summaries, name=session_name)
@@ -446,105 +455,113 @@ async def run_benchmark_plain(
 
     run_summaries = []
 
-    # Run each model
-    for model_name in models:
-        console.rule(f"[bold cyan]Model: {model_name}[/bold cyan]")
+    # Create shared HTTP client for all verification runs
+    import httpx
+    async with httpx.AsyncClient(timeout=30.0) as shared_http_client:
+        # Run each model
+        for model_name in models:
+            console.rule(f"[bold cyan]Model: {model_name}[/bold cyan]")
 
-        try:
-            # Create agent
-            agent = create_agent_from_string(
-                model_name,
-                temperature=temperature,
-                max_output_tokens=max_output_tokens,
-                tool_call_limit=tool_call_limit,
-            )
-            console.print(f"[green]Created agent:[/green] {agent.__class__.__name__}\n")
+            try:
+                # Create agent
+                agent = create_agent_from_string(
+                    model_name,
+                    temperature=temperature,
+                    max_output_tokens=max_output_tokens,
+                    tool_call_limit=tool_call_limit,
+                )
+                console.print(f"[green]Created agent:[/green] {agent.__class__.__name__}\n")
 
-        except Exception as exc:
-            console.print(f"[red]Failed to create agent:[/red] {exc}")
-            continue
+            except Exception as exc:
+                console.print(f"[red]Failed to create agent:[/red] {exc}")
+                continue
 
-        # Run each scenario (multiple times if runs > 1)
-        for scenario in scenarios:
-            for run_num in range(1, runs + 1):
-                run_suffix = f" (run {run_num}/{runs})" if runs > 1 else ""
-                console.print(f"\n[bold]Scenario:[/bold] {scenario.name}{run_suffix}")
-                console.print(f"[dim]{scenario.description}[/dim]\n")
+            # Run each scenario (multiple times if runs > 1)
+            for scenario in scenarios:
+                for run_num in range(1, runs + 1):
+                    run_suffix = f" (run {run_num}/{runs})" if runs > 1 else ""
+                    console.print(f"\n[bold]Scenario:[/bold] {scenario.name}{run_suffix}")
+                    console.print(f"[dim]{scenario.description}[/dim]\n")
 
-                try:
-                    # Convert to Task and extract verifier definitions separately
-                    task, verifier_defs = scenario_to_task(scenario, [mcp_config])
+                    try:
+                        # Convert to Task and extract verifier definitions separately
+                        task, verifier_defs = scenario_to_task(scenario, [mcp_config])
 
-                    # Create RunContext with observer and SQL runner
-                    run_context = RunContext(
-                        sql_runner_url=sql_runner_url,
-                    )
+                        # Create RunContext
+                        run_context = RunContext(
+                            sql_runner_url=sql_runner_url,
+                        )
 
-                    # Add console observer (with optional verifier definitions)
-                    observer = ConsoleObserver(
-                        console=console,
-                        prefix=model_name,
-                        verifier_defs=verifier_defs,
-                        run_context=run_context,
-                    )
-                    run_context.add_observer(observer)
+                        # Create verifier runner with shared HTTP client
+                        verifier_runner = VerifierRunner(
+                            verifier_defs,
+                            run_context,
+                            http_client=shared_http_client,
+                        )
 
-                    # Run agent (with continuous verification via observer)
-                    result = await agent.run(task, max_steps=max_steps, run_context=run_context)
-                    
-                    # Run verification separately (CLI orchestrates this)
-                    verifier_runner = VerifierRunner(verifier_defs, run_context)
-                    verifier_results = await verifier_runner.run_verifiers()
-                    
-                    # Enrich result with verifier results
-                    result.verifier_results = verifier_results
-                    
-                    # Determine final success
-                    all_verifiers_passed = all(v.success for v in verifier_results) if verifier_results else True
-                    final_success = result.success and all_verifiers_passed
-                    
-                    # Update result with final status
-                    if not all_verifiers_passed:
-                        failed = [v.name for v in verifier_results if not v.success]
-                        result.error = f"Verifiers failed: {', '.join(failed)}"
-                    
-                    result.success = final_success
+                        # Add console observer (with injected verifier runner)
+                        observer = ConsoleObserver(
+                            console=console,
+                            prefix=model_name,
+                            verifier_runner=verifier_runner,
+                        )
+                        run_context.add_observer(observer)
 
-                    # Display result
-                    if result.success:
-                        console.print("\n[bold green]✓ Success[/bold green]")
-                    else:
-                        console.print(f"\n[bold red]✗ Failed:[/bold red] {result.error or 'Unknown error'}")
+                        # Run agent (with continuous verification via observer)
+                        result = await agent.run(task, max_steps=max_steps, run_context=run_context)
+                        
+                        # Run final verification (reuses same runner)
+                        verifier_results = await verifier_runner.run_verifiers()
+                        
+                        # Enrich result with verifier results
+                        result.verifier_results = verifier_results
+                        
+                        # Determine final success
+                        all_verifiers_passed = all(v.success for v in verifier_results) if verifier_results else True
+                        final_success = result.success and all_verifiers_passed
+                        
+                        # Update result with final status
+                        if not all_verifiers_passed:
+                            failed = [v.name for v in verifier_results if not v.success]
+                            result.error = f"Verifiers failed: {', '.join(failed)}"
+                        
+                        result.success = final_success
 
-                    # Save result with run number in filename
-                    result_file = session_mgr.save_result(
-                        session_dir,
-                        result,
-                        model_name,
-                        f"{scenario.scenario_id}_run{run_num}" if runs > 1 else scenario.scenario_id,
-                        metadata={
+                        # Display result
+                        if result.success:
+                            console.print("\n[bold green]✓ Success[/bold green]")
+                        else:
+                            console.print(f"\n[bold red]✗ Failed:[/bold red] {result.error or 'Unknown error'}")
+
+                        # Save result with run number in filename
+                        result_file = session_mgr.save_result(
+                            session_dir,
+                            result,
+                            model_name,
+                            f"{scenario.scenario_id}_run{run_num}" if runs > 1 else scenario.scenario_id,
+                            metadata={
+                                "scenario_name": scenario.name,
+                                "temperature": temperature,
+                                "run_number": run_num,
+                                "total_runs": runs,
+                            },
+                        )
+                        console.print(f"[dim]Saved to: {result_file}[/dim]")
+
+                        run_summaries.append({
+                            "model": model_name,
+                            "scenario_id": scenario.scenario_id,
                             "scenario_name": scenario.name,
-                            "temperature": temperature,
                             "run_number": run_num,
-                            "total_runs": runs,
-                        },
-                    )
-                    console.print(f"[dim]Saved to: {result_file}[/dim]")
+                            "success": result.success,
+                            "file": str(result_file.relative_to(session_dir)),
+                        })
 
-                    run_summaries.append({
-                        "model": model_name,
-                        "scenario_id": scenario.scenario_id,
-                        "scenario_name": scenario.name,
-                        "run_number": run_num,
-                        "success": result.success,
-                        "file": str(result_file.relative_to(session_dir)),
-                    })
-
-                except Exception as exc:
-                    console.print(f"\n[red]Error running scenario:[/red] {exc}")
-                    import traceback
-                    traceback.print_exc()
-                    continue
+                    except Exception as exc:
+                        console.print(f"\n[red]Error running scenario:[/red] {exc}")
+                        import traceback
+                        traceback.print_exc()
+                        continue
 
     # Save session manifest
     console.print("\n")
@@ -608,32 +625,35 @@ async def run_all_with_textual(
         await textual_app.run_async()
 
     async def run_all_tasks():
-        # Limit concurrency to prevent resource exhaustion
-        semaphore = asyncio.Semaphore(max_concurrent_runs)
-        tasks = []
+        # Create shared HTTP client for all verification runs
+        async with httpx.AsyncClient(timeout=30.0) as shared_http_client:
+            # Limit concurrency to prevent resource exhaustion
+            semaphore = asyncio.Semaphore(max_concurrent_runs)
+            tasks = []
 
-        for cfg in run_configs:
-            task = run_single_task(
-                label=cfg["label"],
-                model_name=cfg["model"],
-                scenario=cfg["scenario"],
-                batch_alias=cfg["batch_alias"],
-                run_num=cfg["run_num"],
-                queue=queues[cfg["label"]],
-                mcp_config=mcp_config,
-                temperature=temperature,
-                max_output_tokens=max_output_tokens,
-                sql_runner_url=sql_runner_url,
-                session_mgr=session_mgr,
-                session_dir=session_dir,
-                semaphore=semaphore,
-                max_steps=max_steps,
-                tool_call_limit=tool_call_limit,
-            )
-            tasks.append(task)
+            for cfg in run_configs:
+                task = run_single_task(
+                    label=cfg["label"],
+                    model_name=cfg["model"],
+                    scenario=cfg["scenario"],
+                    batch_alias=cfg["batch_alias"],
+                    run_num=cfg["run_num"],
+                    queue=queues[cfg["label"]],
+                    mcp_config=mcp_config,
+                    temperature=temperature,
+                    max_output_tokens=max_output_tokens,
+                    sql_runner_url=sql_runner_url,
+                    session_mgr=session_mgr,
+                    session_dir=session_dir,
+                    semaphore=semaphore,
+                    max_steps=max_steps,
+                    tool_call_limit=tool_call_limit,
+                    shared_http_client=shared_http_client,
+                )
+                tasks.append(task)
 
-        # Run all tasks in parallel
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+            # Run all tasks in parallel
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Build run summaries
         run_summaries = []
@@ -733,8 +753,13 @@ async def run_single_task(
     semaphore: asyncio.Semaphore,
     max_steps: int,
     tool_call_limit: int,
+    shared_http_client: "httpx.AsyncClient",
 ):
-    """Run a single task with Textual observer."""
+    """Run a single task with Textual observer.
+    
+    Args:
+        shared_http_client: Shared HTTP client for verification 
+    """
     async with semaphore:
         try:
             # Create agent
@@ -748,17 +773,23 @@ async def run_single_task(
             # Convert to Task and extract verifier definitions separately
             task, verifier_defs = scenario_to_task(scenario, [mcp_config])
 
-            # Create RunContext with Textual observer
+            # Create RunContext
             run_context = RunContext(
                 sql_runner_url=sql_runner_url,
             )
 
-            # Add Textual observer for UI display (with optional verifier definitions)
+            # Create verifier runner with shared HTTP client (created once, reused)
+            verifier_runner = VerifierRunner(
+                verifier_defs,
+                run_context,
+                http_client=shared_http_client,
+            )
+
+            # Add Textual observer for UI display (with injected verifier runner)
             observer = TextualObserver(
                 queue=queue,
                 width=100,
-                verifier_defs=verifier_defs,
-                run_context=run_context,
+                verifier_runner=verifier_runner,
             )
             run_context.add_observer(observer)
 
@@ -768,8 +799,7 @@ async def run_single_task(
             # Run agent (with continuous verification via observer)
             result = await agent.run(task, max_steps=max_steps, run_context=run_context)
 
-            # Run verification separately (CLI orchestrates this)
-            verifier_runner = VerifierRunner(verifier_defs, run_context)
+            # Run final verification (reuses same runner and shared HTTP client)
             verifier_results = await verifier_runner.run_verifiers()
 
             # Enrich result with verifier results

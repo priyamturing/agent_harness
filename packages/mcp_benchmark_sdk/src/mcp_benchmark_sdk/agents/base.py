@@ -13,14 +13,17 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 
+from ..constants import (
+    DEFAULT_LLM_TIMEOUT_SECONDS,
+    DEFAULT_MAX_STEPS,
+    DEFAULT_TOOL_CALL_LIMIT,
+    TOOL_CALL_ID_HEX_LENGTH,
+)
 from ..mcp import MCPClientManager, MCPConfig
 from ..parsers import ParsedResponse, ResponseParser
 from ..runtime import RunContext
 from ..tasks import AgentResponse, Result, Task, ToolCall, ToolResult
 from ..utils import retry_with_backoff
-
-# Default timeout for LLM API calls (10 minutes)
-_DEFAULT_LLM_TIMEOUT_SECONDS = 600.0
 
 
 class Agent(ABC):
@@ -35,7 +38,7 @@ class Agent(ABC):
     def __init__(
         self,
         system_prompt: Optional[str] = None,
-        tool_call_limit: Optional[int] = 1000,
+        tool_call_limit: Optional[int] = DEFAULT_TOOL_CALL_LIMIT,
     ):
         """Initialize agent.
 
@@ -63,7 +66,7 @@ class Agent(ABC):
     async def run(
         self,
         task: Task,
-        max_steps: int = 1000,
+        max_steps: int = DEFAULT_MAX_STEPS,
         *,
         run_context: Optional[RunContext] = None,
     ) -> Result:
@@ -87,13 +90,15 @@ class Agent(ABC):
         if run_context is None:
             # Agent creates and owns the RunContext
             run_context = RunContext() if task.database_id is None else RunContext(database_id=task.database_id)
+            self._run_context = run_context
             self._owns_run_context = True
         else:
             # User provided RunContext - they're responsible for cleanup
+            self._run_context = run_context
             self._owns_run_context = False
 
-        await self.initialize(task, run_context)
         try:
+            await self.initialize(task, run_context)
             result = await self._execute_loop(max_steps, run_context)
             return result
         finally:
@@ -138,9 +143,13 @@ class Agent(ABC):
         Args:
             task: Task to execute
             run_context: Runtime context
+            
+        Note:
+            When using the high-level run() API, self._run_context is already set
+            before this is called. For low-level API usage, set self._run_context
+            before calling this method.
         """
         self._task = task
-        self._run_context = run_context
 
         # Connect to MCP servers
         self._mcp_manager = MCPClientManager()
@@ -171,15 +180,12 @@ class Agent(ABC):
         for tc in tool_calls:
             # Generate unique ID if LLM didn't provide one
             if tc.id is None:
-                generated_id = f"{tc.name}_{uuid4().hex[:8]}"
+                tc.id = f"{tc.name}_{uuid4().hex[:TOOL_CALL_ID_HEX_LENGTH]}"
                 if self._run_context:
                     await self._run_context.notify_status(
-                        f"⚠️  Tool call '{tc.name}' missing ID - generated: {generated_id}",
+                        f"⚠️  Tool call '{tc.name}' missing ID - generated: {tc.id}",
                         "warning"
                     )
-                tool_call_id = generated_id
-            else:
-                tool_call_id = tc.id
             
             if not tc.name or not tc.name.strip():
                 error_msg = (
@@ -189,7 +195,7 @@ class Agent(ABC):
                 results.append(
                     ToolResult(
                         content=error_msg,
-                        tool_call_id=tool_call_id,
+                        tool_call_id=tc.id,
                         is_error=True,
                     )
                 )
@@ -206,7 +212,7 @@ class Agent(ABC):
                 results.append(
                     ToolResult(
                         content=error_msg,
-                        tool_call_id=tool_call_id,
+                        tool_call_id=tc.id,
                         is_error=True,
                     )
                 )
@@ -242,7 +248,7 @@ class Agent(ABC):
                 results.append(
                     ToolResult(
                         content=content_str,
-                        tool_call_id=tool_call_id,
+                        tool_call_id=tc.id,
                         is_error=False,
                         structured_content=serialized if isinstance(serialized, dict) else None,
                     )
@@ -258,7 +264,7 @@ class Agent(ABC):
                 results.append(
                     ToolResult(
                         content=error_msg,
-                        tool_call_id=tool_call_id,
+                        tool_call_id=tc.id,
                         is_error=True,
                     )
                 )
@@ -442,7 +448,21 @@ class Agent(ABC):
             if response.reasoning:
                 all_reasoning.append(response.reasoning)
 
-            # Add AIMessage to conversation history (CRITICAL for tool call tracking)
+            # Check tool call limit BEFORE adding to history to maintain consistency
+            if response.tool_calls:
+                if remaining_tool_calls is not None:
+                    if remaining_tool_calls < len(response.tool_calls):
+                        await run_context.notify_status("Tool call limit reached", "warning")
+                        return Result(
+                            success=False,
+                            messages=messages,
+                            verifier_results=[],
+                            metadata={"steps": step + 1, "reason": "tool_call_limit_reached"},
+                            database_id=run_context.database_id,
+                            reasoning_traces=all_reasoning,
+                            error="Tool call limit reached",
+                        )
+
             messages.append(ai_message)
 
             # Check if done
@@ -462,17 +482,6 @@ class Agent(ABC):
             # Execute tool calls
             if response.tool_calls:
                 if remaining_tool_calls is not None:
-                    if remaining_tool_calls < len(response.tool_calls):
-                        await run_context.notify_status("Tool call limit reached", "warning")
-                        return Result(
-                            success=False,
-                            messages=messages,
-                            verifier_results=[],
-                            metadata={"steps": step + 1, "reason": "tool_call_limit_reached"},
-                            database_id=run_context.database_id,
-                            reasoning_traces=all_reasoning,
-                            error="Tool call limit reached",
-                        )
                     remaining_tool_calls -= len(response.tool_calls)
 
                 tool_results = await self.call_tools(response.tool_calls)

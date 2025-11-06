@@ -6,7 +6,7 @@ __version__ = "0.1.0"
 from .agents import Agent, ClaudeAgent, GPTAgent, GeminiAgent, GrokAgent
 
 # Task/Result types
-from .tasks import Task, Result, Scenario, ScenarioPrompt
+from .tasks import Task, Result
 
 # MCP config
 from .mcp import MCPConfig, MCPClientManager
@@ -21,6 +21,25 @@ from .runtime import RunContext, RunObserver
 from .parsers import ResponseParser, ParsedResponse
 from .tasks import AgentResponse, ToolCall, ToolResult
 
+# Configuration constants
+from .constants import (
+    DEFAULT_TOOL_CALL_LIMIT,
+    DEFAULT_MAX_STEPS,
+    DEFAULT_LLM_TIMEOUT_SECONDS,
+    DEFAULT_LLM_MAX_RETRIES,
+    TOOL_CALL_ID_HEX_LENGTH,
+    THINKING_SAFETY_MARGIN_TOKENS,
+    THINKING_DEFAULT_OUTPUT_TOKENS,
+    THINKING_DEFAULT_BUDGET_TOKENS,
+    REASONING_MAX_DEPTH,
+    REASONING_MAX_TEXT_LENGTH,
+    RETRY_BASE_DELAY_SECONDS,
+    RETRY_MAX_DELAY_SECONDS,
+    RETRY_DEFAULT_MAX_ATTEMPTS,
+    RETRY_TRANSIENT_STATUS_CODES,
+    DATABASE_VERIFIER_TIMEOUT_SECONDS,
+)
+
 __all__ = [
     # Core
     "Agent",
@@ -34,8 +53,6 @@ __all__ = [
     "GeminiAgent",
     "GrokAgent",
     # Tasks
-    "Scenario",
-    "ScenarioPrompt",
     "AgentResponse",
     "ToolCall",
     "ToolResult",
@@ -49,5 +66,21 @@ __all__ = [
     # Parsers
     "ResponseParser",
     "ParsedResponse",
+    # Constants
+    "DEFAULT_TOOL_CALL_LIMIT",
+    "DEFAULT_MAX_STEPS",
+    "DEFAULT_LLM_TIMEOUT_SECONDS",
+    "DEFAULT_LLM_MAX_RETRIES",
+    "TOOL_CALL_ID_HEX_LENGTH",
+    "THINKING_SAFETY_MARGIN_TOKENS",
+    "THINKING_DEFAULT_OUTPUT_TOKENS",
+    "THINKING_DEFAULT_BUDGET_TOKENS",
+    "REASONING_MAX_DEPTH",
+    "REASONING_MAX_TEXT_LENGTH",
+    "RETRY_BASE_DELAY_SECONDS",
+    "RETRY_MAX_DELAY_SECONDS",
+    "RETRY_DEFAULT_MAX_ATTEMPTS",
+    "RETRY_TRANSIENT_STATUS_CODES",
+    "DATABASE_VERIFIER_TIMEOUT_SECONDS",
 ]
 

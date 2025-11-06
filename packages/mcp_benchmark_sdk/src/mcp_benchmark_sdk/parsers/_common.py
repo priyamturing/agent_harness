@@ -3,6 +3,8 @@
 import json
 from typing import Any, Optional
 
+from ..constants import REASONING_MAX_DEPTH, REASONING_MAX_TEXT_LENGTH
+
 
 def format_json(value: object) -> str:
     """Best-effort JSON formatting for debug output."""
@@ -12,16 +14,15 @@ def format_json(value: object) -> str:
         return json.dumps(value, ensure_ascii=False, indent=2)
     except TypeError:
         text = str(value)
-        max_len = 1200
-        if len(text) > max_len:
-            return text[:max_len] + "…"
+        if len(text) > REASONING_MAX_TEXT_LENGTH:
+            return text[:REASONING_MAX_TEXT_LENGTH] + "…"
         return text
 
 
 def collect_reasoning_chunks(
     reasoning_block: object, 
     chunks: list[str],
-    max_depth: int = 10,
+    max_depth: int = REASONING_MAX_DEPTH,
     _initial_depth: Optional[int] = None
 ) -> None:
     """Normalize reasoning data from various providers into text snippets.
@@ -31,7 +32,7 @@ def collect_reasoning_chunks(
     Args:
         reasoning_block: Reasoning data structure to parse
         chunks: List to append extracted text chunks to
-        max_depth: Maximum recursion depth (default: 10)
+        max_depth: Maximum recursion depth
         _initial_depth: Internal parameter to track original max_depth
     
     Raises:
@@ -40,7 +41,6 @@ def collect_reasoning_chunks(
     if _initial_depth is None:
         _initial_depth = max_depth
     
-    # With max_depth=10, this allows depths 0-9 (10 levels total)
     if max_depth <= 0:
         raise RecursionError(
             f"Reasoning structure nesting depth exceeded maximum limit of {_initial_depth} levels. "

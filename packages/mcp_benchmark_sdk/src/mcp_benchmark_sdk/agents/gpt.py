@@ -9,10 +9,15 @@ from langchain_openai import ChatOpenAI
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 
+from ..constants import (
+    DEFAULT_LLM_MAX_RETRIES,
+    DEFAULT_LLM_TIMEOUT_SECONDS,
+    DEFAULT_TOOL_CALL_LIMIT,
+)
 from ..parsers import OpenAIResponseParser, ResponseParser
 from ..tasks import AgentResponse
 from ..utils import retry_with_backoff
-from .base import Agent, _DEFAULT_LLM_TIMEOUT_SECONDS
+from .base import Agent
 
 
 _REASONING_MODELS = frozenset({
@@ -40,7 +45,7 @@ class GPTAgent(Agent):
         max_output_tokens: Optional[int] = None,
         reasoning_effort: str = "high",
         system_prompt: Optional[str] = None,
-        tool_call_limit: Optional[int] = 1000,
+        tool_call_limit: Optional[int] = DEFAULT_TOOL_CALL_LIMIT,
         **kwargs,
     ):
         """Initialize GPT agent.
@@ -79,7 +84,7 @@ class GPTAgent(Agent):
             "model": model_name,
             "temperature": self.temperature,
             "timeout": None,
-            "max_retries": 3,
+            "max_retries": DEFAULT_LLM_MAX_RETRIES,
         }
 
         if self.max_output_tokens is not None:
@@ -120,7 +125,7 @@ class GPTAgent(Agent):
         ai_message = await retry_with_backoff(
             _invoke,
             max_retries=2,
-            timeout_seconds=_DEFAULT_LLM_TIMEOUT_SECONDS,
+            timeout_seconds=DEFAULT_LLM_TIMEOUT_SECONDS,
             on_retry=lambda attempt, exc, delay: None,
         )
 
