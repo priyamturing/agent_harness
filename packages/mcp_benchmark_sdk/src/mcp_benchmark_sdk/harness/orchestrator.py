@@ -65,18 +65,17 @@ class RunResult:
             "error": self.error,
             "metadata": self.metadata,
             "conversation": self.get_conversation_history(),
-            "verifier_results": [
-                {
-                    "name": vr.name,
-                    "success": vr.success,
-                    "message": vr.message,
-                    "expected_value": vr.expected_value if hasattr(vr, "expected_value") else None,
-                    "actual_value": vr.actual_value if hasattr(vr, "actual_value") else None,
-                    "comparison": vr.comparison_type if hasattr(vr, "comparison_type") else None,
-                    "error": vr.error if hasattr(vr, "error") else None,
-                }
-                for vr in self.verifier_results
-            ],
+        "verifier_results": [
+            {
+                "name": vr.name,
+                "success": vr.success,
+                "expected_value": vr.expected_value if hasattr(vr, "expected_value") else None,
+                "actual_value": vr.actual_value if hasattr(vr, "actual_value") else None,
+                "comparison": vr.comparison_type if hasattr(vr, "comparison_type") else None,
+                "error": vr.error if hasattr(vr, "error") else None,
+            }
+            for vr in self.verifier_results
+        ],
             "reasoning_traces": self.result.reasoning_traces if self.result and self.result.reasoning_traces else [],
             "steps": self.result.metadata.get("steps") if self.result else None,
             "database_id": self.result.database_id if self.result else None,

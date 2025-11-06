@@ -17,6 +17,9 @@ from .verifiers import Verifier, DatabaseVerifier, VerifierResult
 # Runtime context and events
 from .runtime import RunContext, RunObserver
 
+# Telemetry and tracing
+from .telemetry import configure_langsmith, get_langsmith_client, is_tracing_enabled, get_trace_url, print_trace_summary
+
 # Test harness for running benchmarks
 from .harness import (
     TestHarness,
@@ -63,6 +66,12 @@ __all__ = [
     "Result",
     "RunContext",
     "RunObserver",
+    # Telemetry
+    "configure_langsmith",
+    "get_langsmith_client",
+    "is_tracing_enabled",
+    "get_trace_url",
+    "print_trace_summary",
     # Agents
     "ClaudeAgent",
     "GPTAgent",

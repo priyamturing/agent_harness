@@ -132,6 +132,8 @@ class SessionManager:
             artifact["reasoning_traces"] = result.reasoning_traces
         if result.error:
             artifact["error"] = result.error
+        if result.langsmith_url:
+            artifact["langsmith_url"] = result.langsmith_url
         if metadata:
             artifact["metadata"] = metadata
         artifact["timestamp"] = datetime.now(timezone.utc).isoformat()

@@ -97,12 +97,51 @@ def main(
         "--tool-call-limit",
         help="Maximum number of tool calls per run",
     ),
+    langsmith: bool = typer.Option(
+        False,
+        "--langsmith",
+        help="Enable LangSmith tracing for observability (requires LANGCHAIN_API_KEY)",
+    ),
+    langsmith_project: Optional[str] = typer.Option(
+        None,
+        "--langsmith-project",
+        help="LangSmith project name (defaults to MCP_BENCHMARK)",
+    ),
 ) -> None:
     """Run benchmarks using the MCP Benchmark SDK."""
     # Load environment
     load_dotenv(override=False)
     if env_file:
         load_dotenv(env_file, override=True)
+    
+    # Generate unique session_id for this benchmark invocation
+    # This groups all runs from this command together in LangSmith Threads view
+    from datetime import datetime
+    from uuid import uuid4
+    session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
+    
+    # Configure LangSmith tracing if requested
+    if langsmith:
+        from mcp_benchmark_sdk import configure_langsmith, is_tracing_enabled
+        
+        try:
+            env_vars = configure_langsmith(
+                project_name=langsmith_project,
+                enabled=True
+            )
+            console.print(f"[green]✓ LangSmith tracing enabled[/green]")
+            console.print(f"  Project: [cyan]{env_vars.get('LANGCHAIN_PROJECT')}[/cyan]")
+            console.print(f"  Session: [dim]{session_id}[/dim]")
+            console.print(f"  View traces at: [dim]https://smith.langchain.com[/dim]")
+        except ValueError as e:
+            console.print(f"[yellow]⚠ LangSmith setup failed: {e}[/yellow]")
+            console.print(f"[dim]Continuing without tracing...[/dim]")
+    elif os.environ.get("LANGCHAIN_TRACING_V2", "").lower() == "true":
+        from mcp_benchmark_sdk import is_tracing_enabled
+        console.print(f"[green]✓ LangSmith tracing enabled via environment[/green]")
+        project = os.environ.get("LANGCHAIN_PROJECT", "default")
+        console.print(f"  Project: [cyan]{project}[/cyan]")
+        console.print(f"  Session: [dim]{session_id}[/dim]")
 
     # Determine harness file or directory
     harness_path = prompt_file or harness_file
@@ -170,6 +209,7 @@ def main(
                 max_steps=max_steps,
                 max_concurrent_runs=max_concurrent_runs,
                 tool_call_limit=tool_call_limit,
+                session_id=session_id,
             )
         )
     except KeyboardInterrupt:
@@ -195,6 +235,7 @@ async def run_benchmark_batched(
     max_steps: int,
     max_concurrent_runs: int,
     tool_call_limit: int,
+    session_id: str,
 ) -> None:
     """Run all scenario batches together in one session.
     
@@ -208,6 +249,7 @@ async def run_benchmark_batched(
         ui_mode: UI mode
         mcp_url: Optional MCP URL
         sql_runner_url: SQL runner endpoint
+        session_id: Benchmark session ID for LangSmith thread grouping
         max_steps: Maximum steps
         max_concurrent_runs: Max concurrent runs
         tool_call_limit: Tool call limit
@@ -265,6 +307,7 @@ async def run_benchmark_batched(
             max_steps=max_steps,
             max_concurrent_runs=max_concurrent_runs,
             tool_call_limit=tool_call_limit,
+            session_id=session_id,
         )
     else:
         # Run in plain mode
@@ -278,6 +321,7 @@ async def run_benchmark_batched(
             sql_runner_url=sql_runner_url,
             max_steps=max_steps,
             tool_call_limit=tool_call_limit,
+            session_id=session_id,
         )
 
 
@@ -291,6 +335,7 @@ async def run_all_plain(
     sql_runner_url: str,
     max_steps: int,
     tool_call_limit: int,
+    session_id: str,
 ) -> None:
     """Run all configs in plain console mode.
     
@@ -302,6 +347,7 @@ async def run_all_plain(
         temperature: Sampling temperature
         max_output_tokens: Maximum output tokens
         sql_runner_url: SQL runner URL
+        session_id: Benchmark session ID for LangSmith thread grouping
         max_steps: Maximum steps
         tool_call_limit: Tool call limit
     """
@@ -325,6 +371,10 @@ async def run_all_plain(
                 
                 # Convert scenario to task and extract verifier definitions separately
                 task, verifier_defs = scenario_to_task(cfg["scenario"], [mcp_config])
+                
+                # Add session and run metadata for LangSmith grouping
+                task.metadata["session_id"] = session_id
+                task.metadata["run_number"] = 1
                 
                 # Create RunContext
                 run_context = RunContext(sql_runner_url=sql_runner_url)
@@ -486,6 +536,10 @@ async def run_benchmark_plain(
                     try:
                         # Convert to Task and extract verifier definitions separately
                         task, verifier_defs = scenario_to_task(scenario, [mcp_config])
+                        
+                        # Add session and run metadata for LangSmith grouping
+                        task.metadata["session_id"] = session_id
+                        task.metadata["run_number"] = run_num
 
                         # Create RunContext
                         run_context = RunContext(
@@ -591,6 +645,7 @@ async def run_all_with_textual(
     max_steps: int,
     max_concurrent_runs: int,
     tool_call_limit: int,
+    session_id: str,
 ) -> None:
     """Run all configs with Textual UI (all files batched together).
     
@@ -605,6 +660,7 @@ async def run_all_with_textual(
         max_steps: Maximum agent steps
         max_concurrent_runs: Maximum concurrent runs
         tool_call_limit: Maximum tool calls per run
+        session_id: Benchmark session ID for LangSmith thread grouping
     """
     session_mgr = SessionManager(RESULTS_ROOT)
 
@@ -649,6 +705,7 @@ async def run_all_with_textual(
                     max_steps=max_steps,
                     tool_call_limit=tool_call_limit,
                     shared_http_client=shared_http_client,
+                    session_id=session_id,
                 )
                 tasks.append(task)
 
@@ -754,11 +811,13 @@ async def run_single_task(
     max_steps: int,
     tool_call_limit: int,
     shared_http_client: "httpx.AsyncClient",
+    session_id: str,
 ):
     """Run a single task with Textual observer.
     
     Args:
-        shared_http_client: Shared HTTP client for verification 
+        shared_http_client: Shared HTTP client for verification
+        session_id: Benchmark session ID for LangSmith thread grouping
     """
     async with semaphore:
         try:
@@ -772,6 +831,10 @@ async def run_single_task(
 
             # Convert to Task and extract verifier definitions separately
             task, verifier_defs = scenario_to_task(scenario, [mcp_config])
+            
+            # Add session and run metadata for LangSmith grouping
+            task.metadata["session_id"] = session_id
+            task.metadata["run_number"] = run_num
 
             # Create RunContext
             run_context = RunContext(

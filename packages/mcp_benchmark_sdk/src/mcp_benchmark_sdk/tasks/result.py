@@ -48,6 +48,7 @@ class Result:
     database_id: Optional[str] = None
     reasoning_traces: list[str] = field(default_factory=list)
     error: Optional[str] = None
+    langsmith_url: Optional[str] = None  # LangSmith trace URL if tracing is enabled
 
     def get_conversation_history(self) -> list[dict[str, Any]]:
         """Extract conversation history in user-friendly format.

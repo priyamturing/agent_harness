@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import textwrap
 from abc import ABC, abstractmethod
 from typing import Any, Optional
@@ -12,6 +13,7 @@ from uuid import uuid4
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
+from langsmith import traceable
 
 from ..constants import (
     DEFAULT_LLM_TIMEOUT_SECONDS,
@@ -85,17 +87,96 @@ class Agent(ABC):
             and will clean it up automatically. If you provide your own
             run_context, you're responsible for cleaning it up (e.g., using
             'async with RunContext() as ctx').
+            
+        LangSmith Tracing:
+            Creates a parent trace that groups all LLM calls and tool executions.
+            Each run gets its own trace with metadata for easy identification.
         """
-        # Track RunContext ownership for proper cleanup
+        # Setup run context first to get database_id for trace metadata
         if run_context is None:
-            # Agent creates and owns the RunContext
             run_context = RunContext() if task.database_id is None else RunContext(database_id=task.database_id)
-            self._run_context = run_context
-            self._owns_run_context = True
+            owns_context = True
         else:
-            # User provided RunContext - they're responsible for cleanup
-            self._run_context = run_context
-            self._owns_run_context = False
+            owns_context = False
+        
+        # Wrap execution in traceable context if tracing is enabled
+        if os.environ.get("LANGCHAIN_TRACING_V2", "").lower() == "true":
+            # Create descriptive name for this trace
+            model_name = self.model if hasattr(self, "model") else "unknown"
+            
+            # Extract scenario info from task metadata
+            scenario_name = "task"
+            run_number = None
+            if task and hasattr(task, "metadata") and task.metadata:
+                scenario_name = task.metadata.get("scenario_name", scenario_name)
+                run_number = task.metadata.get("run_number")
+            
+            # Build readable trace name: "grok-4: scenario_name (run 2)"
+            trace_name = f"{model_name}: {scenario_name}"
+            if run_number is not None:
+                trace_name = f"{trace_name} (run {run_number})"
+            
+            # Get database_id from run_context (more reliable than task.database_id)
+            db_id = run_context.database_id if run_context else (task.database_id if task else None)
+            
+            # Get session_id and thread_id for grouping (LangSmith Threads feature)
+            # session_id: Groups ALL runs from one mcp-benchmark invocation
+            # thread_id: Unique ID for this specific run (model+scenario+run_number)
+            session_id = None
+            thread_id = None
+            if task and task.metadata:
+                session_id = task.metadata.get("session_id")
+                thread_id = task.metadata.get("thread_id")
+                
+                # Generate thread_id if not provided (unique per model+scenario+run)
+                if not thread_id and session_id:
+                    thread_id = f"{session_id}_{model_name}_{scenario_name}_run{run_number or 1}"
+            
+            # Create metadata for filtering/search
+            trace_metadata = {
+                "model": model_name,
+                "scenario": scenario_name,
+                "database_id": db_id,
+                "prompt_preview": task.prompt[:100] if task and task.prompt else "N/A",
+            }
+            if run_number is not None:
+                trace_metadata["run_number"] = run_number
+            
+            # Add session_id for grouping all runs from same benchmark session
+            # This enables LangSmith's Threads view: https://docs.langchain.com/langsmith/threads
+            if session_id:
+                trace_metadata["session_id"] = session_id
+            if thread_id:
+                trace_metadata["thread_id"] = thread_id
+            
+            # Use traceable wrapper with descriptive name
+            @traceable(name=trace_name, run_type="chain", metadata=trace_metadata)
+            async def _run_with_trace():
+                return await self._run_impl(task, max_steps, run_context, owns_context)
+            
+            return await _run_with_trace()
+        else:
+            # No tracing - run directly
+            return await self._run_impl(task, max_steps, run_context, owns_context)
+    
+    async def _run_impl(
+        self,
+        task: Task,
+        max_steps: int,
+        run_context: RunContext,
+        owns_context: bool,
+    ) -> Result:
+        """Internal implementation of run (separated for tracing wrapper).
+        
+        Args:
+            task: Task to execute
+            max_steps: Maximum agent turns
+            run_context: Already initialized RunContext
+            owns_context: Whether this agent owns the context (for cleanup)
+        """
+        # Set context ownership
+        self._run_context = run_context
+        self._owns_run_context = owns_context
 
         try:
             await self.initialize(task, run_context)
@@ -435,6 +516,7 @@ class Agent(ABC):
                     metadata={"step": step, "error": str(exc)},
                     database_id=run_context.database_id,
                     error=str(exc),
+                    langsmith_url=self._get_langsmith_trace_url(messages),
                 )
 
             # Log assistant message
@@ -461,6 +543,7 @@ class Agent(ABC):
                             database_id=run_context.database_id,
                             reasoning_traces=all_reasoning,
                             error="Tool call limit reached",
+                            langsmith_url=self._get_langsmith_trace_url(messages),
                         )
 
             messages.append(ai_message)
@@ -477,6 +560,7 @@ class Agent(ABC):
                     database_id=run_context.database_id,
                     reasoning_traces=all_reasoning,
                     error=None,
+                    langsmith_url=self._get_langsmith_trace_url(messages),
                 )
 
             # Execute tool calls
@@ -499,7 +583,51 @@ class Agent(ABC):
             database_id=run_context.database_id,
             reasoning_traces=all_reasoning,
             error="Maximum steps reached",
+            langsmith_url=self._get_langsmith_trace_url(messages),
         )
+
+    def _get_langsmith_trace_url(self, messages: list[BaseMessage]) -> Optional[str]:
+        """Get LangSmith trace URL for the parent run (Agent.run).
+        
+        Since Agent.run() is decorated with @traceable, it creates a parent trace
+        that groups all LLM calls and tool executions. This method fetches that
+        parent trace's shareable URL.
+        
+        Returns:
+            LangSmith trace URL (shareable link) or None if tracing is disabled
+        """
+        if os.environ.get("LANGCHAIN_TRACING_V2", "").lower() != "true":
+            return None
+        
+        # Get the current run tree (this is the Agent.run parent trace)
+        try:
+            from langsmith import get_current_run_tree, Client
+            
+            run_tree = get_current_run_tree()
+            if not run_tree or not run_tree.id:
+                return None
+            
+            # Fetch the run from LangSmith to get the correct shareable URL
+            try:
+                client = Client()
+                run = client.read_run(str(run_tree.id))
+                
+                # The run.url property gives us the correct shareable URL
+                if run and hasattr(run, "url") and run.url:
+                    return run.url
+            except Exception:
+                pass
+            
+            # Fallback: use the trace_url or share_url from run_tree
+            if hasattr(run_tree, "trace_url") and run_tree.trace_url:
+                return run_tree.trace_url
+            
+            # Last resort: construct URL manually using the format from LangSmith docs
+            # The actual URL format varies, so we'll just return None if we can't get it properly
+            return None
+            
+        except Exception:
+            return None
 
     # ============ Internal Helpers ============
 
