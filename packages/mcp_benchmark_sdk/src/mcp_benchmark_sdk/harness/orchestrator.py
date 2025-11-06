@@ -36,45 +36,19 @@ class RunResult:
     def get_conversation_history(self) -> list[dict[str, Any]]:
         """Extract conversation history from result messages.
         
+        Delegates to the Result.get_conversation_history() method which formats
+        messages in a clean, user-friendly format.
+        
         Returns:
-            List of conversation entries with role and content
+            List of conversation entries in clean format:
+            - Messages: {"type": "message", "role": "user|assistant|system", "content": "...", "reasoning": [...]}
+            - Tool calls: {"type": "tool_call", "tool": "tool_name", "args": {...}}
+            - Tool results: {"type": "tool_result", "tool": "tool_name", "output": {...}}
         """
-        if not self.result or not self.result.messages:
+        if not self.result:
             return []
         
-        conversation = []
-        for msg in self.result.messages:
-            entry: dict[str, Any] = {
-                "role": msg.type,
-                "content": msg.content,
-            }
-            
-            # Add additional metadata if available
-            if hasattr(msg, "additional_kwargs") and msg.additional_kwargs:
-                entry["additional_kwargs"] = msg.additional_kwargs
-            
-            # Add tool calls if present (AIMessage)
-            if hasattr(msg, "tool_calls") and msg.tool_calls:
-                entry["tool_calls"] = [
-                    {
-                        "id": tc.get("id"),
-                        "name": tc.get("name"),
-                        "args": tc.get("args"),
-                    }
-                    for tc in msg.tool_calls
-                ]
-            
-            # Add tool call ID if present (ToolMessage)
-            if hasattr(msg, "tool_call_id") and msg.tool_call_id:
-                entry["tool_call_id"] = msg.tool_call_id
-            
-            # Add name if present (ToolMessage)
-            if hasattr(msg, "name") and msg.name:
-                entry["name"] = msg.name
-            
-            conversation.append(entry)
-        
-        return conversation
+        return self.result.get_conversation_history()
     
     def to_dict(self) -> dict[str, Any]:
         """Convert RunResult to dictionary for serialization.

@@ -1,7 +1,5 @@
 """Session persistence for benchmark runs."""
 
-from __future__ import annotations
-
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,28 +48,51 @@ class SessionManager:
 
             counter += 1
 
-    def _extract_provider_from_model(self, model_name: str) -> str:
-        """Extract provider name from model name.
+    def _extract_conversation_history(self, messages: list[Any]) -> list[dict[str, Any]]:
+        """Extract conversation history from result messages.
         
         Args:
-            model_name: Full model name
+            messages: List of message objects from Result
             
         Returns:
-            Provider name (anthropic, openai, google, xai, etc.)
+            List of conversation entries with role and content
         """
-        model_lower = model_name.lower()
-        if "claude" in model_lower or "anthropic" in model_lower:
-            return "anthropic"
-        elif "gpt" in model_lower or "openai" in model_lower or "o1" in model_lower:
-            return "openai"
-        elif "gemini" in model_lower or "google" in model_lower:
-            return "google"
-        elif "grok" in model_lower or "xai" in model_lower:
-            return "xai"
-        elif "qwen" in model_lower:
-            return "qwen"
-        else:
-            return "unknown"
+        if not messages:
+            return []
+        
+        conversation = []
+        for msg in messages:
+            entry: dict[str, Any] = {
+                "role": msg.type if hasattr(msg, "type") else "unknown",
+                "content": msg.content if hasattr(msg, "content") else str(msg),
+            }
+            
+            # Add additional metadata if available
+            if hasattr(msg, "additional_kwargs") and msg.additional_kwargs:
+                entry["additional_kwargs"] = msg.additional_kwargs
+            
+            # Add tool calls if present (AIMessage)
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                entry["tool_calls"] = [
+                    {
+                        "id": tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None),
+                        "name": tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None),
+                        "args": tc.get("args") if isinstance(tc, dict) else getattr(tc, "arguments", None),
+                    }
+                    for tc in msg.tool_calls
+                ]
+            
+            # Add tool call ID if present (ToolMessage)
+            if hasattr(msg, "tool_call_id") and msg.tool_call_id:
+                entry["tool_call_id"] = msg.tool_call_id
+            
+            # Add name if present (ToolMessage)
+            if hasattr(msg, "name") and msg.name:
+                entry["name"] = msg.name
+            
+            conversation.append(entry)
+        
+        return conversation
 
     def save_result(
         self,
@@ -93,48 +114,37 @@ class SessionManager:
         Returns:
             Path to saved file
         """
-        # Extract conversation history using SDK method
-        conversation = result.get_conversation_history()
+        # Extract conversation history from messages
+        conversation_history = self._extract_conversation_history(result.messages)
         
-        # Build verifier results
-        verifier_results = [
-            {
-                "name": vr.name,
-                "success": vr.success,
-                "expected": vr.expected_value,
-                "actual": vr.actual_value,
-                "comparison": vr.comparison_type,
-                "error": vr.error,
-            }
-            for vr in result.verifier_results
-        ] if result.verifier_results else []
-        
-        # Build artifact in OLD jira_mcp_benchmark format
-        # conversation must be FIRST!
+        # Build artifact
         artifact = {
-            "conversation": conversation,
-            "run_label": f"{model_name}-{scenario_id}",
-            "database_id": result.database_id,
-            "provider": self._extract_provider_from_model(model_name),
             "model": model_name,
-            "prompt_alias": metadata.get("scenario_name", scenario_id) if metadata else scenario_id,
-            "status": "completed" if result.success else "failed",
-            "scenarios": [
+            "scenario_id": scenario_id,
+            "success": result.success,
+            "database_id": result.database_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "metadata": {
+                **(result.metadata or {}),
+                **(metadata or {}),
+            },
+            "reasoning_traces": result.reasoning_traces,
+            "conversation_history": conversation_history,
+            "verifier_results": [
                 {
-                    "scenario_id": metadata.get("scenario_name", scenario_id) if metadata else scenario_id,
-                    "verifiers": verifier_results,
+                    "name": vr.name,
+                    "success": vr.success,
+                    "expected": vr.expected_value,
+                    "actual": vr.actual_value,
+                    "comparison": vr.comparison_type,
+                    "error": vr.error,
                 }
-            ],
+                for vr in result.verifier_results
+            ]
+            if result.verifier_results
+            else [],
+            "error": result.error,
         }
-        
-        # Add optional fields
-        if result.reasoning_traces:
-            artifact["reasoning_traces"] = result.reasoning_traces
-        if result.error:
-            artifact["error"] = result.error
-        if metadata:
-            artifact["metadata"] = metadata
-        artifact["timestamp"] = datetime.now(timezone.utc).isoformat()
 
         # Save to file
         filename = f"{scenario_id}_{model_name}.json"
