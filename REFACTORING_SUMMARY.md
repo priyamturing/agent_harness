@@ -139,10 +139,14 @@ Configuration for:
 Result of a single run containing:
 - Model name, scenario info
 - Success status
-- Agent result
+- Agent result (with full message history)
 - Verifier results
 - Error messages (if any)
 - Metadata
+
+**Key Methods:**
+- `get_conversation_history()` - Extract full conversation as list of dicts
+- `to_dict()` - Export complete result for JSON serialization (includes conversation, verifiers, reasoning traces)
 
 ### VerifierRunner
 

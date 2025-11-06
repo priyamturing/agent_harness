@@ -41,6 +41,14 @@ results = await harness.run(
 # Analyze results
 for result in results:
     print(f"{result.model} - {result.scenario_id}: {'✓' if result.success else '✗'}")
+    
+    # Access conversation history
+    conversation = result.get_conversation_history()
+    print(f"  Total messages: {len(conversation)}")
+    
+    # Export to dict for saving
+    result_dict = result.to_dict()
+    # result_dict contains: conversation, verifier_results, reasoning_traces, etc.
 ```
 
 ## Using with Custom Observers
@@ -133,6 +141,34 @@ JSON harness files follow this structure:
   ]
 }
 ```
+
+## Accessing Conversation History
+
+Each `RunResult` provides access to the full conversation history:
+
+```python
+results = await harness.run(models=["gpt-4o"], agent_factory=create_agent)
+
+for result in results:
+    # Get conversation as list of dicts
+    conversation = result.get_conversation_history()
+    for msg in conversation:
+        print(f"{msg['role']}: {msg['content'][:100]}...")
+        if 'tool_calls' in msg:
+            print(f"  Tool calls: {[tc['name'] for tc in msg['tool_calls']]}")
+    
+    # Export full result to dict for saving
+    import json
+    result_dict = result.to_dict()
+    with open(f"result_{result.model}_{result.scenario_id}.json", "w") as f:
+        json.dump(result_dict, f, indent=2)
+```
+
+The `to_dict()` method provides a complete serializable representation including:
+- Full conversation history
+- Verifier results
+- Reasoning traces
+- Metadata (steps, database_id, etc.)
 
 ## Advanced Configuration
 

@@ -155,6 +155,14 @@ successful = [r for r in results if r.success]
 by_model = {}
 for r in results:
     by_model.setdefault(r.model, []).append(r)
+
+# Export conversation history
+import json
+for r in results:
+    result_dict = r.to_dict()
+    # Contains: conversation, verifier_results, reasoning_traces, etc.
+    with open(f"result_{r.model}_{r.scenario_id}.json", "w") as f:
+        json.dump(result_dict, f, indent=2)
 ```
 
 ## Extensibility

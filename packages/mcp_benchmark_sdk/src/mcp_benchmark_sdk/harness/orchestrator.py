@@ -32,6 +32,81 @@ class RunResult:
     verifier_results: list[VerifierResult]
     error: Optional[str] = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    
+    def get_conversation_history(self) -> list[dict[str, Any]]:
+        """Extract conversation history from result messages.
+        
+        Returns:
+            List of conversation entries with role and content
+        """
+        if not self.result or not self.result.messages:
+            return []
+        
+        conversation = []
+        for msg in self.result.messages:
+            entry: dict[str, Any] = {
+                "role": msg.type,
+                "content": msg.content,
+            }
+            
+            # Add additional metadata if available
+            if hasattr(msg, "additional_kwargs") and msg.additional_kwargs:
+                entry["additional_kwargs"] = msg.additional_kwargs
+            
+            # Add tool calls if present (AIMessage)
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                entry["tool_calls"] = [
+                    {
+                        "id": tc.get("id"),
+                        "name": tc.get("name"),
+                        "args": tc.get("args"),
+                    }
+                    for tc in msg.tool_calls
+                ]
+            
+            # Add tool call ID if present (ToolMessage)
+            if hasattr(msg, "tool_call_id") and msg.tool_call_id:
+                entry["tool_call_id"] = msg.tool_call_id
+            
+            # Add name if present (ToolMessage)
+            if hasattr(msg, "name") and msg.name:
+                entry["name"] = msg.name
+            
+            conversation.append(entry)
+        
+        return conversation
+    
+    def to_dict(self) -> dict[str, Any]:
+        """Convert RunResult to dictionary for serialization.
+        
+        Returns:
+            Dictionary representation suitable for JSON export
+        """
+        return {
+            "model": self.model,
+            "scenario_id": self.scenario_id,
+            "scenario_name": self.scenario_name,
+            "run_number": self.run_number,
+            "success": self.success,
+            "error": self.error,
+            "metadata": self.metadata,
+            "conversation": self.get_conversation_history(),
+            "verifier_results": [
+                {
+                    "name": vr.name,
+                    "success": vr.success,
+                    "message": vr.message,
+                    "expected_value": vr.expected_value if hasattr(vr, "expected_value") else None,
+                    "actual_value": vr.actual_value if hasattr(vr, "actual_value") else None,
+                    "comparison": vr.comparison_type if hasattr(vr, "comparison_type") else None,
+                    "error": vr.error if hasattr(vr, "error") else None,
+                }
+                for vr in self.verifier_results
+            ],
+            "reasoning_traces": self.result.reasoning_traces if self.result and self.result.reasoning_traces else [],
+            "steps": self.result.metadata.get("steps") if self.result else None,
+            "database_id": self.result.database_id if self.result else None,
+        }
 
 
 @dataclass

@@ -124,6 +124,16 @@ results = await harness.run(
 
 for result in results:
     print(f"{result.model} - {result.scenario_id}: {'✓' if result.success else '✗'}")
+    
+    # Access full conversation history
+    conversation = result.get_conversation_history()
+    print(f"  Messages: {len(conversation)}")
+    
+    # Export complete artifact with conversation, verifiers, reasoning
+    import json
+    result_dict = result.to_dict()
+    with open(f"result_{result.model}_{result.scenario_id}.json", "w") as f:
+        json.dump(result_dict, f, indent=2)
 ```
 
 ### CLI Usage (Unchanged)
@@ -146,6 +156,7 @@ mcp-benchmark-cli \
 5. **Well-Documented**: Comprehensive docs and examples
 6. **Extensible**: Easy to add verifiers, agents, observers
 7. **Efficient**: Parallel execution, shared resources
+8. **Complete Artifacts**: Full conversation history, verifier results, reasoning traces exportable via `to_dict()`
 
 ## Validation
 
@@ -173,10 +184,11 @@ All files have been validated:
 - `packages/mcp_benchmark_sdk/src/mcp_benchmark_sdk/harness/scenario.py`
 - `packages/mcp_benchmark_sdk/src/mcp_benchmark_sdk/harness/loader.py`
 - `packages/mcp_benchmark_sdk/src/mcp_benchmark_sdk/harness/agent_factory.py`
-- `packages/mcp_benchmark_sdk/src/mcp_benchmark_sdk/harness/orchestrator.py`
+- `packages/mcp_benchmark_sdk/src/mcp_benchmark_sdk/harness/orchestrator.py` (with conversation history support)
 - `packages/mcp_benchmark_sdk/src/mcp_benchmark_sdk/harness/README.md`
 - `packages/mcp_benchmark_sdk/src/mcp_benchmark_sdk/harness/DESIGN.md`
 - `packages/mcp_benchmark_sdk/examples/simple_harness_example.py`
+- `packages/mcp_benchmark_sdk/examples/save_artifacts_example.py` (demonstrates conversation export)
 - `REFACTORING_SUMMARY.md`
 - `IMPLEMENTATION_COMPLETE.md` (this file)
 

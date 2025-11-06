@@ -76,14 +76,31 @@ async def main():
         if result.error:
             print(f"  Error: {result.error}")
         
+        # Show conversation summary
+        conversation = result.get_conversation_history()
+        print(f"  Conversation: {len(conversation)} messages")
+        
         if result.verifier_results:
             print(f"  Verifiers:")
             for v in result.verifier_results:
                 v_status = "✓" if v.success else "✗"
                 print(f"    {v_status} {v.name}: {v.message}")
+        
+        # Export to dict for saving (includes full conversation)
+        result_dict = result.to_dict()
+        print(f"  Result dict keys: {list(result_dict.keys())}")
 
     successful = sum(1 for r in results if r.success)
     print(f"\nTotal: {len(results)} | Passed: {successful} | Failed: {len(results) - successful}")
+    
+    # Example: Save first result to JSON
+    if results:
+        import json
+        first_result = results[0].to_dict()
+        print(f"\nFirst result conversation has {len(first_result['conversation'])} messages")
+        print("Sample conversation entry:")
+        if first_result['conversation']:
+            print(json.dumps(first_result['conversation'][0], indent=2)[:200] + "...")
 
 
 if __name__ == "__main__":
