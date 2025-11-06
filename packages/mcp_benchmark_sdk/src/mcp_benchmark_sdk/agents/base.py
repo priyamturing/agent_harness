@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import json
-import textwrap
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 from uuid import uuid4
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, StructuredTool
+from langchain_mcp_adapters.tools import ToolException, _convert_call_tool_result
+from mcp.types import CallToolResult, Tool as MCPSpecTool, TextContent
+from mcp_agent.agents.agent import Agent as MCPAgent
+from mcp_agent.config import MCPSettings, MCPServerSettings, Settings
+from mcp_agent.core.context import Context
+from mcp_agent.executor.executor import AsyncioExecutor
+from mcp_agent.mcp.mcp_server_registry import ServerRegistry
 
 from ..constants import (
     DEFAULT_LLM_TIMEOUT_SECONDS,
@@ -19,7 +25,7 @@ from ..constants import (
     DEFAULT_TOOL_CALL_LIMIT,
     TOOL_CALL_ID_HEX_LENGTH,
 )
-from ..mcp import MCPClientManager, MCPConfig
+from ..mcp import MCPConfig
 from ..parsers import ParsedResponse, ResponseParser
 from ..runtime import RunContext
 from ..tasks import AgentResponse, Result, Task, ToolCall, ToolResult
@@ -52,10 +58,13 @@ class Agent(ABC):
         # Runtime state (set during initialize)
         self._task: Optional[Task] = None
         self._run_context: Optional[RunContext] = None
-        self._mcp_manager: Optional[MCPClientManager] = None
         self._tools: list[BaseTool] = []
         self._tool_map: dict[str, BaseTool] = {}
         self._llm: Optional[BaseChatModel] = None
+        self._mcp_agent_core: Optional[MCPAgent] = None
+        self._mcp_context: Optional[Context] = None
+        self._mcp_executor: Optional[AsyncioExecutor] = None
+        self._server_registry: Optional[ServerRegistry] = None
         
         # Ownership tracking for resource cleanup
         # If agent creates RunContext internally, it's responsible for cleaning it up
@@ -151,19 +160,43 @@ class Agent(ABC):
         """
         self._task = task
 
-        # Connect to MCP servers
-        self._mcp_manager = MCPClientManager()
-        await self._mcp_manager.connect(task.mcps, run_context.database_id)
+        server_settings = self._build_server_settings(task.mcps, run_context.database_id)
+        settings = Settings(mcp=MCPSettings(servers=server_settings))
 
-        # Load tools
-        self._tools = self._mcp_manager.get_all_tools()
+        context = Context(config=settings)
+        server_registry = ServerRegistry(config=settings)
+        context.server_registry = server_registry
+
+        executor = AsyncioExecutor()
+        executor._context = context  # Bind executor to context for callbacks
+        context.executor = executor
+
+        agent_name = task.metadata.get("agent_name") if task.metadata else None
+        if not agent_name:
+            agent_name = f"benchmark-agent-{uuid4().hex[:8]}"
+
+        self._mcp_context = context
+        self._mcp_executor = executor
+        self._server_registry = server_registry
+
+        self._mcp_agent_core = MCPAgent(
+            name=agent_name,
+            instruction=self.system_prompt,
+            server_names=list(server_settings.keys()),
+            context=context,
+            connection_persistence=False,
+        )
+
+        await self._mcp_agent_core.initialize()
+
+        tools_result = await self._mcp_agent_core.list_tools()
+        self._tools = self._build_structured_tools(tools_result.tools)
         self._tool_map = {tool.name: tool for tool in self._tools}
 
-        # Build LLM with tools
         self._llm = self._build_llm()
 
         await run_context.notify_status(
-            f"Initialized with {len(self._tools)} tools from {len(task.mcps)} MCP(s)"
+            f"Initialized with {len(self._tools)} tools from {len(server_settings)} MCP(s)"
         )
 
     async def call_tools(self, tool_calls: list[ToolCall]) -> list[ToolResult]:
@@ -175,47 +208,45 @@ class Agent(ABC):
         Returns:
             List of tool results
         """
+        if not self._mcp_agent_core:
+            raise RuntimeError("MCP agent not initialized. Call initialize() first.")
+
         results: list[ToolResult] = []
 
         for tc in tool_calls:
-            # Generate unique ID if LLM didn't provide one
             if tc.id is None:
                 tc.id = f"{tc.name}_{uuid4().hex[:TOOL_CALL_ID_HEX_LENGTH]}"
                 if self._run_context:
                     await self._run_context.notify_status(
                         f"⚠️  Tool call '{tc.name}' missing ID - generated: {tc.id}",
-                        "warning"
+                        "warning",
                     )
-            
+
             if not tc.name or not tc.name.strip():
                 error_msg = (
                     "Invalid tool call: missing or empty tool name. "
                     "This indicates a malformed LLM response."
                 )
-                results.append(
-                    ToolResult(
-                        content=error_msg,
-                        tool_call_id=tc.id,
-                        is_error=True,
-                    )
+                tool_result = ToolResult(
+                    content=error_msg,
+                    tool_call_id=tc.id,
+                    is_error=True,
                 )
+                results.append(tool_result)
                 if self._run_context:
                     await self._run_context.notify_tool_call(
                         "<empty_name>", tc.arguments, error_msg, is_error=True
                     )
                 continue
-            
-            tool = self._tool_map.get(tc.name)
 
-            if tool is None:
+            if tc.name not in self._tool_map:
                 error_msg = f"Unknown tool '{tc.name}'"
-                results.append(
-                    ToolResult(
-                        content=error_msg,
-                        tool_call_id=tc.id,
-                        is_error=True,
-                    )
+                tool_result = ToolResult(
+                    content=error_msg,
+                    tool_call_id=tc.id,
+                    is_error=True,
                 )
+                results.append(tool_result)
                 if self._run_context:
                     await self._run_context.notify_tool_call(
                         tc.name, tc.arguments, error_msg, is_error=True
@@ -223,56 +254,33 @@ class Agent(ABC):
                 continue
 
             try:
-                # Invoke tool
-                if hasattr(tool, "ainvoke"):
-                    output = await tool.ainvoke(tc.arguments)
-                else:
-                    loop = asyncio.get_running_loop()
-                    output = await loop.run_in_executor(None, tool.invoke, tc.arguments)
-
-                # Serialize output
-                serialized = self._serialize_tool_output(output)
-                
-                # MCP protocol requires JSON-serializable responses
-                # If serialization fails, it's a protocol violation by the MCP server
-                try:
-                    content_str = json.dumps(serialized, ensure_ascii=False)
-                except TypeError as e:
-                    raise TypeError(
-                        f"Tool '{tc.name}' returned non-JSON-serializable data. "
-                        f"MCP servers must return JSON-compatible types. "
-                        f"Received type: {type(serialized).__name__}. "
-                        f"Original error: {e}"
-                    ) from e
-
-                results.append(
-                    ToolResult(
-                        content=content_str,
-                        tool_call_id=tc.id,
-                        is_error=False,
-                        structured_content=serialized if isinstance(serialized, dict) else None,
-                    )
+                call_result = await self._mcp_agent_core.call_tool(
+                    tc.name, arguments=tc.arguments
                 )
-
-                if self._run_context:
-                    await self._run_context.notify_tool_call(
-                        tc.name, tc.arguments, serialized, is_error=False
-                    )
-
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 error_msg = f"Tool '{tc.name}' failed: {exc!r}"
-                results.append(
-                    ToolResult(
-                        content=error_msg,
-                        tool_call_id=tc.id,
-                        is_error=True,
-                    )
+                tool_result = ToolResult(
+                    content=error_msg,
+                    tool_call_id=tc.id,
+                    is_error=True,
                 )
-
+                results.append(tool_result)
                 if self._run_context:
                     await self._run_context.notify_tool_call(
                         tc.name, tc.arguments, error_msg, is_error=True
                     )
+                continue
+
+            tool_result = self._convert_call_result(tc, call_result)
+            results.append(tool_result)
+
+            if self._run_context:
+                await self._run_context.notify_tool_call(
+                    tc.name,
+                    tc.arguments,
+                    tool_result.structured_content or tool_result.content,
+                    is_error=tool_result.is_error,
+                )
 
         return results
 
@@ -349,8 +357,27 @@ class Agent(ABC):
         cleanup even if resources don't explicitly support it.
         """
         # Clean MCP connections
-        if self._mcp_manager:
-            await self._mcp_manager.cleanup()
+        if self._mcp_agent_core:
+            try:
+                await self._mcp_agent_core.shutdown()
+            except Exception:
+                pass
+            finally:
+                self._mcp_agent_core = None
+
+        if self._server_registry and getattr(self._server_registry, "connection_manager", None):
+            try:
+                await self._server_registry.connection_manager.close()  # type: ignore[call-arg]
+            except Exception:
+                pass
+            finally:
+                self._server_registry = None
+                self._mcp_context = None
+                self._mcp_executor = None
+        else:
+            self._server_registry = None
+            self._mcp_context = None
+            self._mcp_executor = None
         
         # Clean RunContext if we own it (created internally in run())
         # If user provided their own RunContext, they're responsible for cleanup
@@ -512,21 +539,89 @@ class Agent(ABC):
         """
         ...
 
-    def _serialize_tool_output(self, result: object) -> object:
-        """Serialize tool output to consistent format."""
-        if isinstance(result, str):
-            stripped = result.strip()
-            if stripped:
-                try:
-                    return json.loads(stripped)
-                except json.JSONDecodeError:
-                    return result
-            return result
+    def _build_server_settings(
+        self, configs: list[MCPConfig], database_id: Optional[str]
+    ) -> dict[str, MCPServerSettings]:
+        servers: dict[str, MCPServerSettings] = {}
+        for config in configs:
+            headers = dict(config.headers) if config.headers else {}
+            if database_id and "x-database-id" not in headers:
+                headers["x-database-id"] = database_id
 
-        if isinstance(result, (int, float, bool)) or result is None:
-            return result
+            servers[config.name] = MCPServerSettings(
+                name=config.name,
+                transport=config.transport,
+                command=config.command,
+                args=list(config.args) if config.args else [],
+                url=config.url,
+                headers=headers or None,
+            )
 
-        return result
+        return servers
+
+    def _build_structured_tools(self, tools: list[MCPSpecTool]) -> list[StructuredTool]:
+        structured: list[StructuredTool] = []
+        for tool in sorted(tools, key=lambda t: t.name):
+            structured.append(self._create_structured_tool(tool))
+        return structured
+
+    def _create_structured_tool(self, tool: MCPSpecTool) -> StructuredTool:
+        tool_name = tool.name
+
+        async def call_tool(**arguments: Any) -> Any:
+            if not self._mcp_agent_core:
+                raise RuntimeError("MCP agent not initialized. Call initialize() first.")
+
+            call_result = await self._mcp_agent_core.call_tool(tool_name, arguments=arguments)
+            try:
+                text_content, non_text_content = _convert_call_tool_result(call_result)
+            except ToolException as exc:
+                raise ToolException(str(exc) or self._stringify_call_tool_result(call_result)) from exc
+
+            return (text_content, non_text_content) if non_text_content else text_content
+
+        return StructuredTool(
+            name=tool.name,
+            description=tool.description or "",
+            args_schema=tool.inputSchema,
+            coroutine=call_tool,
+            response_format="content_and_artifact",
+        )
+
+    @staticmethod
+    def _stringify_call_tool_result(call_result: CallToolResult) -> str:
+        parts: list[str] = []
+        for content_block in call_result.content:
+            try:
+                if isinstance(content_block, TextContent):
+                    if content_block.text:
+                        parts.append(content_block.text)
+                else:
+                    parts.append(
+                        json.dumps(content_block.model_dump(mode="json"), ensure_ascii=False)
+                    )
+            except Exception:
+                parts.append(str(content_block))
+
+        if not parts:
+            serialized = call_result.model_dump(mode="json")
+            content = serialized.get("content")
+            try:
+                return json.dumps(content, ensure_ascii=False)
+            except Exception:
+                return str(content)
+
+        return "\n".join(parts)
+
+    def _convert_call_result(self, tool_call: ToolCall, call_result: CallToolResult) -> ToolResult:
+        content_str = self._stringify_call_tool_result(call_result)
+        structured = call_result.model_dump(mode="json")
+        return ToolResult(
+            content=content_str,
+            tool_call_id=tool_call.id,
+            is_error=bool(call_result.isError),
+            structured_content=structured,
+        )
 
     @staticmethod
     def _extract_text_content(content: Any) -> str:
