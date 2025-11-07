@@ -54,100 +54,129 @@ class Result:
     langsmith_url: Optional[str] = None  # LangSmith trace URL if tracing is enabled
 
     def get_conversation_history(self) -> list[dict[str, Any]]:
-        """Extract conversation history in user-friendly format.
-        
-        Converts LangChain messages to a clean format:
-        - Messages: {"type": "message", "role": "user|assistant|system", "content": "...", "reasoning": [...]}
-        - Tool calls: {"type": "tool_call", "tool": "tool_name", "args": {...}}
-        - Tool results: {"type": "tool_result", "tool": "tool_name", "output": {...}}
-        
-        Returns:
-            List of conversation entries in clean format
-        """
+        """Return conversation entries derived from LangChain messages."""
         if not self.messages:
             return []
-        
-        conversation = []
+
+        conversation: list[dict[str, Any]] = []
         for msg in self.messages:
-            msg_type = msg.type if hasattr(msg, "type") else "unknown"
-            
+            msg_type = getattr(msg, "type", None)
+
             if msg_type == "ai":
-                content_text = ""
-                reasoning_blocks = []
-                tool_uses = []
-                
-                if hasattr(msg, "content") and isinstance(msg.content, list):
-                    for block in msg.content:
-                        if isinstance(block, dict):
-                            if block.get("type") == "thinking":
-                                reasoning_blocks.append(block.get("thinking", ""))
-                            elif block.get("type") == "text":
-                                content_text = block.get("text", "")
-                            elif block.get("type") == "tool_use":
-                                tool_uses.append({
-                                    "id": block.get("id"),
-                                    "name": block.get("name"),
-                                    "input": block.get("input", {}),
-                                })
-                elif hasattr(msg, "content") and isinstance(msg.content, str):
-                    content_text = msg.content
-                
-                if content_text or reasoning_blocks:
-                    entry: dict[str, Any] = {
-                        "type": "message",
-                        "role": "assistant",
-                    }
-                    if content_text:
-                        entry["content"] = content_text
-                    if reasoning_blocks:
-                        entry["reasoning"] = reasoning_blocks
-                    conversation.append(entry)
-                
-                tool_calls_to_add = tool_uses if tool_uses else []
-                if hasattr(msg, "tool_calls") and msg.tool_calls:
-                    for tc in msg.tool_calls:
-                        tool_calls_to_add.append({
-                            "name": tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "unknown"),
-                            "args": tc.get("args") if isinstance(tc, dict) else getattr(tc, "arguments", {}),
-                        })
-                
-                for tc in tool_calls_to_add:
-                    conversation.append({
-                        "type": "tool_call",
-                        "tool": tc.get("name", "unknown"),
-                        "args": tc.get("input") if "input" in tc else tc.get("args", {}),
-                    })
-            
+                conversation.extend(self._format_ai_message(msg))
             elif msg_type == "tool":
-                tool_name = msg.name if hasattr(msg, "name") else "unknown"
-                content = msg.content if hasattr(msg, "content") else ""
-                
-                try:
-                    output = json.loads(content) if isinstance(content, str) else content
-                except (json.JSONDecodeError, TypeError):
-                    output = content
-                
-                conversation.append({
-                    "type": "tool_result",
-                    "tool": tool_name,
-                    "output": output,
-                })
-            
+                entry = self._format_tool_result(msg)
+                if entry:
+                    conversation.append(entry)
             elif msg_type == "human":
-                if hasattr(msg, "content") and msg.content:
-                    conversation.append({
-                        "type": "message",
-                        "role": "user",
-                        "content": msg.content,
-                    })
-            
+                entry = self._format_role_message(msg, "user")
+                if entry:
+                    conversation.append(entry)
             elif msg_type == "system":
-                if hasattr(msg, "content") and msg.content:
-                    conversation.append({
-                        "type": "message",
-                        "role": "system",
-                        "content": msg.content,
-                    })
-        
+                entry = self._format_role_message(msg, "system")
+                if entry:
+                    conversation.append(entry)
+
         return conversation
+
+    def _format_ai_message(self, msg: Any) -> list[dict[str, Any]]:
+        content_text, reasoning_blocks = self._extract_ai_content(msg)
+        entries: list[dict[str, Any]] = []
+
+        if content_text or reasoning_blocks:
+            message_entry: dict[str, Any] = {
+                "type": "message",
+                "role": "assistant",
+            }
+            if content_text:
+                message_entry["content"] = content_text
+            if reasoning_blocks:
+                message_entry["reasoning"] = reasoning_blocks
+            entries.append(message_entry)
+
+        entries.extend(self._collect_tool_calls(msg))
+        return entries
+
+    def _extract_ai_content(self, msg: Any) -> tuple[str, list[str]]:
+        content = getattr(msg, "content", None)
+
+        if isinstance(content, list):
+            text = ""
+            reasoning: list[str] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
+                if block_type == "thinking":
+                    reasoning.append(block.get("thinking", ""))
+                elif block_type == "text":
+                    text = block.get("text", "")
+            return text, reasoning
+
+        if isinstance(content, str):
+            return content, []
+
+        return "", []
+
+    def _collect_tool_calls(self, msg: Any) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+
+        content = getattr(msg, "content", None)
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    entries.append(self._tool_call_entry(block.get("name"), block.get("input", {})))
+
+        tool_calls = getattr(msg, "tool_calls", None)
+        if tool_calls:
+            for tc in tool_calls:
+                if isinstance(tc, dict):
+                    entries.append(self._tool_call_entry(tc.get("name"), tc.get("args", {})))
+                else:
+                    entries.append(
+                        self._tool_call_entry(
+                            getattr(tc, "name", None),
+                            getattr(tc, "arguments", {}),
+                        )
+                    )
+
+        return entries
+
+    def _tool_call_entry(self, name: Any, args: Any) -> dict[str, Any]:
+        formatted_args = args if isinstance(args, dict) else args
+        return {
+            "type": "tool_call",
+            "tool": name or "unknown",
+            "args": formatted_args,
+        }
+
+    def _format_tool_result(self, msg: Any) -> Optional[dict[str, Any]]:
+        tool_name = getattr(msg, "name", "unknown")
+        content = getattr(msg, "content", "")
+
+        output = self._safe_json_load(content)
+        return {
+            "type": "tool_result",
+            "tool": tool_name or "unknown",
+            "output": output,
+        }
+
+    def _format_role_message(self, msg: Any, role: str) -> Optional[dict[str, Any]]:
+        content = getattr(msg, "content", None)
+        if not content:
+            return None
+
+        return {
+            "type": "message",
+            "role": role,
+            "content": content,
+        }
+
+    def _safe_json_load(self, content: Any) -> Any:
+        if isinstance(content, str):
+            try:
+                return json.loads(content)
+            except (json.JSONDecodeError, TypeError):
+                return content
+        return content
 

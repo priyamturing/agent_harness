@@ -1,6 +1,6 @@
 """Tool schema fixer for Python reserved keywords."""
 
-from typing import Any
+from typing import Any, Literal
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, create_model
@@ -68,7 +68,7 @@ def fix_tool_schemas(tools: list[BaseTool]) -> list[BaseTool]:
         class FixedTool(BaseTool):
             name: str = tool.name
             description: str = tool.description
-            args_schema: type[BaseModel] = new_schema
+            args_schema: type[BaseModel] = new_schema  # type: ignore[assignment]
             
             # Copy critical tool configuration and metadata
             return_direct: bool = tool.return_direct
@@ -78,7 +78,7 @@ def fix_tool_schemas(tools: list[BaseTool]) -> list[BaseTool]:
             metadata: Any = tool.metadata
             handle_tool_error: Any = tool.handle_tool_error
             handle_validation_error: Any = tool.handle_validation_error
-            response_format: str = tool.response_format
+            response_format: Literal['content', 'content_and_artifact'] = tool.response_format  # type: ignore[assignment]
             
             # Store field mapping and original tool to avoid closure variable capture bug
             _field_mapping: dict[str, str] = field_mapping

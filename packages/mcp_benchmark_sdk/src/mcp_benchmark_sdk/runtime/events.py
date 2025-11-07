@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Optional
+from typing import Any, Optional
 
-if TYPE_CHECKING:
-    from ..tasks import AgentResponse, ToolCall, ToolResult
+
 
 
 class RunObserver(ABC):
