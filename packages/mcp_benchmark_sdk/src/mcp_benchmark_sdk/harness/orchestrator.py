@@ -108,10 +108,8 @@ class TestHarness:
         )
     )
     
-    # Attach observers for UI
     harness.add_observer_factory(lambda: MyUIObserver())
     
-    # Run benchmarks
     results = await harness.run(
         models=["gpt-4o", "claude-sonnet-4-5"],
         agent_factory=create_agent_from_string,
@@ -289,7 +287,6 @@ class TestHarness:
                         observer.configure(run_config["label"], observer_config)  # type: ignore
                     run_context.add_observer(observer)
 
-                # Get MCP URL from config
                 if not self.config.mcp:
                     raise ValueError("MCP configuration is required to run benchmarks")
                 mcp_url = self.config.mcp.url

@@ -25,7 +25,6 @@ class OpenAIResponseParser:
         raw_reasoning: list[str] = []
         content = message.content
 
-        # Parse content blocks
         if isinstance(content, str):
             if content:
                 primary_chunks.append(content)
@@ -36,13 +35,11 @@ class OpenAIResponseParser:
 
                 block_type = block.get("type")
 
-                # Output text from reasoning models
                 if block_type in {"output_text", "text", None}:
                     text = block.get("text")
                     if text:
                         primary_chunks.append(text)
 
-                # Reasoning blocks (GPT-5, o-series)
                 elif block_type == "reasoning":
                     summary = block.get("summary")
                     if summary:
@@ -52,13 +49,11 @@ class OpenAIResponseParser:
                     except RecursionError as e:
                         reasoning_chunks.append(f"[Error: {e}]")
 
-                # Fallback: extract any text
                 else:
                     text = block.get("text")
                     if text:
                         primary_chunks.append(text)
 
-        # Check additional_kwargs for reasoning (GPT-5 high reasoning effort)
         if hasattr(message, "additional_kwargs"):
             extra_reasoning = message.additional_kwargs.get("reasoning")
             if extra_reasoning:
@@ -71,7 +66,6 @@ class OpenAIResponseParser:
                 except RecursionError as e:
                     reasoning_chunks.append(f"[Error: {e}]")
 
-        # Extract tool calls
         tool_calls = []
         if hasattr(message, "tool_calls") and message.tool_calls:
             for tc in message.tool_calls:

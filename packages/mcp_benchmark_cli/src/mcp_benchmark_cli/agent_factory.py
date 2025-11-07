@@ -3,6 +3,8 @@
 from typing import Any, Optional
 
 from mcp_benchmark_sdk import Agent, create_agent as sdk_create_agent, with_tracing
+
+from .openrouter_agent import OpenRouterAgent
 from .qwen_agent import QwenAgent
 from .prompts import PROJECT_MANAGEMENT_SYSTEM_PROMPT
 
@@ -47,6 +49,16 @@ def create_agent_from_string(
             system_prompt=system_prompt,
             **kwargs,
         )
+
+    if model_lower.startswith("openrouter"):
+        return OpenRouterAgent(
+            model=model,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            tool_call_limit=tool_call_limit,
+            system_prompt=system_prompt,
+            **kwargs,
+        )
     
     # Use SDK's create_agent and wrap with tracing if enabled
     agent = sdk_create_agent(
@@ -63,4 +75,3 @@ def create_agent_from_string(
 
 
 __all__ = ["create_agent_from_string"]
-

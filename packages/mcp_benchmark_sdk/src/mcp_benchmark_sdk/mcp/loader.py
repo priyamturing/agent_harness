@@ -39,7 +39,6 @@ class MCPClientManager:
         if not config:
             raise ValueError("MCP configuration required")
 
-        # Build server configuration
         connection: dict[str, Any] = {"transport": config.transport}
 
         if config.url:
@@ -49,7 +48,6 @@ class MCPClientManager:
         if config.args:
             connection["args"] = config.args
 
-        # Merge headers with database_id
         headers = dict(config.headers) if config.headers else {}
         if database_id and "x-database-id" not in headers:
             headers["x-database-id"] = database_id
@@ -60,7 +58,6 @@ class MCPClientManager:
         server_configs: dict[str, Mapping[str, Any]] = {config.name: connection}
         self._config = config
 
-        # Create and connect client
         try:
             self._client = MultiServerMCPClient(server_configs)  # type: ignore[arg-type]
             raw_tools = await self._client.get_tools()

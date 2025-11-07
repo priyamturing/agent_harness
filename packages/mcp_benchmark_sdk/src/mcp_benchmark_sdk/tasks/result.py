@@ -71,13 +71,11 @@ class Result:
         for msg in self.messages:
             msg_type = msg.type if hasattr(msg, "type") else "unknown"
             
-            # Handle AI messages (may have complex content structure)
             if msg_type == "ai":
                 content_text = ""
                 reasoning_blocks = []
                 tool_uses = []
                 
-                # Parse complex content structure if it's a list
                 if hasattr(msg, "content") and isinstance(msg.content, list):
                     for block in msg.content:
                         if isinstance(block, dict):
@@ -94,7 +92,6 @@ class Result:
                 elif hasattr(msg, "content") and isinstance(msg.content, str):
                     content_text = msg.content
                 
-                # Add AI message if it has content or reasoning
                 if content_text or reasoning_blocks:
                     entry: dict[str, Any] = {
                         "type": "message",
@@ -106,7 +103,6 @@ class Result:
                         entry["reasoning"] = reasoning_blocks
                     conversation.append(entry)
                 
-                # Add tool calls from content blocks or tool_calls attribute
                 tool_calls_to_add = tool_uses if tool_uses else []
                 if hasattr(msg, "tool_calls") and msg.tool_calls:
                     for tc in msg.tool_calls:
@@ -122,12 +118,10 @@ class Result:
                         "args": tc.get("input") if "input" in tc else tc.get("args", {}),
                     })
             
-            # Handle tool result messages
             elif msg_type == "tool":
                 tool_name = msg.name if hasattr(msg, "name") else "unknown"
                 content = msg.content if hasattr(msg, "content") else ""
                 
-                # Try to parse JSON output
                 try:
                     output = json.loads(content) if isinstance(content, str) else content
                 except (json.JSONDecodeError, TypeError):
@@ -139,7 +133,6 @@ class Result:
                     "output": output,
                 })
             
-            # Handle human messages
             elif msg_type == "human":
                 if hasattr(msg, "content") and msg.content:
                     conversation.append({
@@ -148,7 +141,6 @@ class Result:
                         "content": msg.content,
                     })
             
-            # Handle system messages
             elif msg_type == "system":
                 if hasattr(msg, "content") and msg.content:
                     conversation.append({

@@ -96,7 +96,6 @@ class GeminiAgent(Agent):
             "max_output_tokens": self.max_output_tokens,
         }
 
-        # Check environment for thinking budget
         env_budget = os.environ.get("GOOGLE_THINKING_BUDGET")
         if env_budget and "thinking_budget" not in config:
             try:
@@ -106,7 +105,6 @@ class GeminiAgent(Agent):
                     f"Invalid GOOGLE_THINKING_BUDGET value '{env_budget}'. Must be an integer."
                 ) from exc
 
-        # Override with explicit thinking_budget if provided
         if self.thinking_budget is not None:
             config["thinking_budget"] = self.thinking_budget
 
@@ -139,7 +137,6 @@ class GeminiAgent(Agent):
             on_retry=lambda attempt, exc, delay: None,
         )
 
-        # Parse response
         parser = self.get_response_parser()
         parsed = parser.parse(ai_message)
 

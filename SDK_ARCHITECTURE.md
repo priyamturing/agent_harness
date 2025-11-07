@@ -18,7 +18,7 @@ The MCP Benchmark SDK is a Python framework for building and running LLM agent b
 
 - **Multi-Level API**: High-level automation, mid-level customization, low-level control
 - **Provider Support**: OpenAI (GPT), Anthropic (Claude), Google (Gemini), xAI (Grok)
-- **Multi-MCP**: Connect to multiple MCP servers per task
+- **MCP Integration**: Connect to MCP servers for tool execution
 - **Observable Execution**: Event system for logging, UI, and telemetry
 - **Extensible Verification**: Built-in SQL verifiers with custom verifier support
 - **Test Harness**: Systematic benchmarking across models and scenarios
@@ -108,7 +108,7 @@ The MCP Benchmark SDK is a Python framework for building and running LLM agent b
 #### 6. Task & Result Layer
 - **Purpose**: Data structures for input/output
 - **Components**:
-  - `Task`: Input specification (prompt, MCPs, metadata)
+  - `Task`: Input specification (prompt, MCP config, metadata)
   - `Result`: Execution outcome with conversation history
 
 #### 7. Verifier Layer
@@ -161,12 +161,12 @@ sequenceDiagram
     Agent->>RunContext: notify_status("Starting execution")
     RunContext->>Observer: on_status("Starting execution")
     
-    Note over Agent: Agent Loop Begins
+    Note over Agent: Agent Loop Begins (_execute_loop)
     
     loop Until done or max_steps
-        Agent->>Agent: step()
-        Agent->>Agent: get_response(messages, tools)
-        Agent->>LLM: invoke(messages, tools)
+        Agent->>Agent: _execute_loop() internal iteration
+        Agent->>Agent: get_response(messages)
+        Agent->>LLM: invoke(messages)
         LLM-->>Agent: AI message (may include tool calls)
         
         Agent->>ResponseParser: parse(ai_message)
@@ -211,7 +211,8 @@ sequenceDiagram
    - LLM is configured with tools binding
 
 2. **Execution Loop**:
-   - Each `step()` calls the LLM with current message history
+   - Internal `_execute_loop()` iterates until completion or max_steps
+   - Each iteration calls `get_response(messages)` which invokes the LLM
    - Response is parsed to extract tool calls, content, and reasoning
    - Tool calls are executed against MCP servers
    - All events are notified to observers for real-time monitoring
@@ -416,11 +417,6 @@ sequenceDiagram
    - Enables real-time UI updates
    - Useful for debugging and monitoring
 
-5. **Multi-Server Support**:
-   - `MCPClientManager` can connect to multiple servers
-   - Tools from all servers are aggregated
-   - Tool names must be unique across servers
-
 ---
 
 ### 4. Verification Flow
@@ -521,8 +517,8 @@ sequenceDiagram
 
 **Rationale**:
 - **High-level** (`agent.run(task)`): Simple one-liner for common cases
-- **Mid-level** (`initialize()`, `step()`, `cleanup()`): Manual control over loop
-- **Low-level** (`get_response()`, `get_model_config()`): Override LLM behavior
+- **Mid-level** (Override `get_response()`, `get_response_parser()`): Custom LLM integration
+- **Low-level** (Use primitives `initialize()`, `call_tools()`, etc.): Build custom workflows
 
 **Benefits**:
 - Single agent class for all use cases
@@ -536,20 +532,32 @@ sequenceDiagram
 agent = ClaudeAgent()
 result = await agent.run(task)
 
-# Mid-level: Manual loop control
-agent = ClaudeAgent()
-await agent.initialize(task, run_context)
-while not done:
-    response = await agent.step()
-    if response.done:
-        break
-result = await agent.cleanup()
-
-# Low-level: Custom LLM
+# Mid-level: Custom LLM integration
 class CustomAgent(Agent):
-    async def get_response(self, messages, tools):
+    async def get_response(self, messages):
         # Override to use custom LLM
-        return await my_custom_llm(messages, tools)
+        response = await my_custom_llm(messages)
+        # Parse and return AgentResponse
+        return parsed_response, raw_message
+    
+    def get_response_parser(self):
+        return MyCustomParser()
+
+# Use custom agent with high-level API
+agent = CustomAgent()
+result = await agent.run(task)  # Uses your custom LLM
+
+# Low-level: Use primitives for custom workflow
+agent = ClaudeAgent()
+run_context = RunContext()
+await agent.initialize(task, run_context)
+
+# Build your own loop using primitives
+messages = agent.get_initial_messages()
+tools = agent.get_available_tools()
+# ... custom execution logic ...
+
+await agent.cleanup()
 ```
 
 ---
@@ -800,7 +808,7 @@ RETRY_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 ```python
 # Direct SDK usage (no harness)
 agent = ClaudeAgent()
-task = Task(prompt="Create issue", mcps=[mcp_config])
+task = Task(prompt="Create issue", mcp=mcp_config)
 result = await agent.run(task)
 
 # Harness for benchmarking
@@ -875,17 +883,25 @@ class TracingAgent(Agent):
 **Example**:
 
 ```python
-# Everything is async
+# All agent operations are async
 async def run(self, task: Task) -> Result:
-    await self.initialize(task)
-    while not done:
-        response = await self.step()
-    return await self.cleanup()
+    await self.initialize(task, run_context)
+    result = await self._execute_loop(max_steps, run_context)
+    await self.cleanup()
+    return result
+
+# Tool calls are async
+async def call_tools(self, tool_calls):
+    results = []
+    for tc in tool_calls:
+        output = await tool.ainvoke(tc.arguments)
+        results.append(output)
+    return results
 
 # Harness runs everything concurrently
 async def run(self, models, agent_factory):
     tasks = [self._run_single(config) for config in run_configs]
-    results = await asyncio.gather(*tasks)
+    results = await asyncio.gather(*tasks)  # All run in parallel
 ```
 
 ---
@@ -905,16 +921,14 @@ async def main():
         temperature=0.1,
     )
     
-    # Define task
+    # Define task    
     task = Task(
         prompt="Create a bug issue titled 'Test Bug' in project DEMO",
-        mcps=[
-            MCPConfig(
-                name="jira",
-                url="http://localhost:8015/mcp",
-                transport="streamable_http",
-            )
-        ],
+        mcp=MCPConfig(
+            name="jira",
+            url="http://localhost:8015/mcp",
+            transport="streamable_http",
+        ),
     )
     
     # Run task
@@ -1040,29 +1054,38 @@ async def main():
 
 ---
 
-### Example 4: Custom Agent with Custom LLM
+### Example 4: Custom Agent with Custom LLM (Simplified)
 
 ```python
-from mcp_benchmark_sdk import Agent, ParsedResponse, ToolCall
+from mcp_benchmark_sdk import Agent, AgentResponse, ToolCall
+from langchain_core.messages import AIMessage
 
 class MyCustomAgent(Agent):
     """Agent using custom LLM."""
     
-    def __init__(self, model: str, **kwargs):
+    def __init__(self, model: str, api_key: str, **kwargs):
         super().__init__(**kwargs)
         self.model = model
-        self._llm = self._create_custom_llm()
+        self.api_key = api_key
     
-    def _create_custom_llm(self):
-        # Initialize your custom LLM
-        return MyCustomLLM(model=self.model)
-    
-    async def get_response(self, messages, tools):
-        """Override to use custom LLM."""
-        # Call your custom LLM
-        response = await self._llm.generate(messages, tools)
+    async def get_response(self, messages):
+        """Override to use custom LLM.
         
-        # Parse response into ParsedResponse
+        Args:
+            messages: List of conversation messages (LangChain format)
+            
+        Returns:
+            Tuple of (AgentResponse, AIMessage)
+        """
+        # Call your custom LLM (tools are available as self._tools)
+        response = await my_custom_llm_call(
+            messages=messages,
+            tools=self._tools,
+            model=self.model,
+            api_key=self.api_key,
+        )
+        
+        # Parse tool calls
         tool_calls = []
         for tc in response.tool_calls:
             tool_calls.append(ToolCall(
@@ -1071,61 +1094,103 @@ class MyCustomAgent(Agent):
                 id=tc.id,
             ))
         
-        return ParsedResponse(
+        # Create AgentResponse
+        agent_response = AgentResponse(
             content=response.content,
             tool_calls=tool_calls,
             reasoning=response.thinking,
-            stop_reason=response.stop_reason,
+            done=response.is_complete,
         )
+        
+        # Create AIMessage for conversation history
+        ai_message = AIMessage(
+            content=response.content,
+            tool_calls=[{"name": tc.name, "args": tc.arguments, "id": tc.id}
+                       for tc in tool_calls],
+        )
+        
+        return agent_response, ai_message
+    
+    def get_response_parser(self):
+        """Return parser for this agent."""
+        from mcp_benchmark_sdk.parsers import OpenAIParser
+        return OpenAIParser()  # Or your custom parser
 
-# Use custom agent
-agent = MyCustomAgent(model="my-model-v1")
+# Use custom agent with high-level API
+agent = MyCustomAgent(model="my-model-v1", api_key="sk-...")
 result = await agent.run(task)
+print(f"Success: {result.success}")
 ```
 
 ---
 
-### Example 5: Manual Loop Control (Mid-Level API)
+### Example 5: Custom LLM Integration (Mid-Level API)
 
 ```python
+from mcp_benchmark_sdk import Agent, ParsedResponse, ToolCall
+from langchain_core.messages import AIMessage
+
+class CustomLLMAgent(Agent):
+    """Agent that integrates a custom LLM."""
+    
+    def __init__(self, model: str, api_key: str, **kwargs):
+        super().__init__(**kwargs)
+        self.model = model
+        self.api_key = api_key
+        self._custom_client = MyCustomLLMClient(api_key)
+    
+    async def get_response(self, messages):
+        """Override to call custom LLM."""
+        # Call your custom LLM API
+        response = await self._custom_client.generate(
+            messages=messages,
+            model=self.model,
+            tools=self._tools,
+        )
+        
+        # Parse response into expected format
+        tool_calls = []
+        for tc in response.tool_calls:
+            tool_calls.append(ToolCall(
+                name=tc.name,
+                arguments=tc.args,
+                id=tc.id,
+            ))
+        
+        # Create AgentResponse
+        agent_response = AgentResponse(
+            content=response.content,
+            tool_calls=tool_calls,
+            reasoning=response.thinking if hasattr(response, 'thinking') else None,
+            done=response.is_complete,
+        )
+        
+        # Create AIMessage for conversation history
+        ai_message = AIMessage(
+            content=response.content,
+            tool_calls=[{"name": tc.name, "args": tc.arguments, "id": tc.id} 
+                       for tc in tool_calls],
+        )
+        
+        return agent_response, ai_message
+    
+    def get_response_parser(self):
+        """Return custom parser if needed."""
+        return MyCustomResponseParser()
+
+# Use custom agent with high-level API
 async def main():
-    agent = ClaudeAgent()
-    task = Task(prompt="Create issue", mcps=[mcp_config])
+    agent = CustomLLMAgent(
+        model="my-model-v2",
+        api_key="sk-...",
+        system_prompt="You are a helpful assistant",
+    )
     
-    # Initialize
-    run_context = RunContext()
-    await agent.initialize(task, run_context)
+    task = Task(prompt="Create issue", mcp=mcp_config)
     
-    # Manual control loop
-    step_count = 0
-    max_steps = 50
-    
-    try:
-        while step_count < max_steps:
-            print(f"Step {step_count + 1}")
-            
-            # Execute one step
-            response = await agent.step()
-            
-            print(f"Content: {response.content[:100]}")
-            print(f"Tool calls: {len(response.tool_calls)}")
-            
-            # Custom stopping logic
-            if response.done:
-                print("Agent indicated completion")
-                break
-            
-            if "completed successfully" in response.content.lower():
-                print("Found success indicator")
-                break
-            
-            step_count += 1
-    finally:
-        # Cleanup
-        result = await agent.cleanup()
-    
-    print(f"Final success: {result.success}")
-    return result
+    # High-level API works with custom LLM
+    result = await agent.run(task)
+    print(f"Success: {result.success}")
 ```
 
 ---
@@ -1222,34 +1287,6 @@ async def run_and_save_benchmarks():
     
     with open(output_dir / "summary.json", "w") as f:
         json.dump(summary, f, indent=2)
-```
-
----
-
-### Example 8: Multi-MCP Configuration
-
-```python
-# Task with multiple MCP servers
-task = Task(
-    prompt="Create JIRA issue and commit code to GitHub",
-    mcps=[
-        MCPConfig(
-            name="jira",
-            url="http://localhost:8015/mcp",
-            transport="streamable_http",
-        ),
-        MCPConfig(
-            name="github",
-            url="http://localhost:8016/mcp",
-            transport="streamable_http",
-        ),
-    ],
-)
-
-# Agent gets tools from both servers
-result = await agent.run(task)
-
-# Tools available: create_issue, update_issue (JIRA) + create_pr, commit (GitHub)
 ```
 
 ---

@@ -28,14 +28,12 @@ def _extract_scalar_value(response_json: dict) -> Any:
     if not response_json:
         return None
 
-    # Common format: {"rows": [[1]], "columns": ["COUNT(*)"]}
     rows = response_json.get("rows")
     columns = response_json.get("columns")
     
     if isinstance(rows, list) and rows:
         first_row = rows[0]
         if isinstance(first_row, list):
-            # Validate single column if metadata is available
             if columns and isinstance(columns, list) and len(columns) > 1:
                 raise ValueError(
                     f"Query returned {len(columns)} columns: {columns}. "
@@ -45,12 +43,10 @@ def _extract_scalar_value(response_json: dict) -> Any:
             if first_row:
                 return first_row[0]
 
-    # Alternate format: {"data": [{"COUNT(*)": 1}]}
     data = response_json.get("data")
     if isinstance(data, list) and data:
         first_entry = data[0]
         if isinstance(first_entry, dict):
-            # Validate single column
             if len(first_entry) > 1:
                 cols = list(first_entry.keys())
                 raise ValueError(
@@ -61,7 +57,6 @@ def _extract_scalar_value(response_json: dict) -> Any:
             for value in first_entry.values():
                 return value
 
-    # Nested result format
     result = response_json.get("result")
     if isinstance(result, dict):
         return _extract_scalar_value(result)

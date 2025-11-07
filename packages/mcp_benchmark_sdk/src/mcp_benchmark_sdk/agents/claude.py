@@ -102,7 +102,6 @@ class ClaudeAgent(Agent):
             "max_retries": DEFAULT_LLM_MAX_RETRIES,
         }
 
-        # Enable thinking for supported models
         if self.enable_thinking and normalized_model in {
             "claude-4.5-sonnet-reasoning",
             "claude-4.5-sonnet",
@@ -148,10 +147,9 @@ class ClaudeAgent(Agent):
             _invoke,
             max_retries=2,
             timeout_seconds=DEFAULT_LLM_TIMEOUT_SECONDS,
-            on_retry=lambda attempt, exc, delay: None,  # Could log via RunContext
+            on_retry=lambda attempt, exc, delay: None,
         )
 
-        # Parse response
         parser = self.get_response_parser()
         parsed = parser.parse(ai_message)
 

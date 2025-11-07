@@ -25,7 +25,6 @@ class GoogleResponseParser:
         raw_reasoning: list[str] = []
         content = message.content
 
-        # Parse content
         if isinstance(content, str):
             if content:
                 primary_chunks.append(content)
@@ -36,26 +35,22 @@ class GoogleResponseParser:
 
                 block_type = block.get("type")
 
-                # Text content
                 if block_type in {"text", None}:
                     text = block.get("text")
                     if text:
                         primary_chunks.append(text)
 
-                # Thoughts/thinking (Gemini thinking budget)
                 elif block_type in {"thinking", "thought"}:
                     thought_text = block.get("text") or block.get("thinking")
                     if thought_text:
                         reasoning_chunks.append(thought_text)
                         raw_reasoning.append(format_json({"thought": thought_text}))
 
-                # Fallback
                 else:
                     text = block.get("text")
                     if text:
                         primary_chunks.append(text)
 
-        # Check for thoughts in additional_kwargs
         if hasattr(message, "additional_kwargs"):
             thoughts = message.additional_kwargs.get("thoughts")
             if thoughts:
@@ -65,7 +60,6 @@ class GoogleResponseParser:
                     reasoning_chunks.append(f"[Error: {e}]")
                 raw_reasoning.append(format_json({"thoughts": thoughts}))
 
-        # Extract tool calls
         tool_calls = []
         if hasattr(message, "tool_calls") and message.tool_calls:
             for tc in message.tool_calls:

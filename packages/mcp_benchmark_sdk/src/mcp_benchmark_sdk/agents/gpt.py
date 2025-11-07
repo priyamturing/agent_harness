@@ -77,7 +77,6 @@ class GPTAgent(Agent):
 
     def _build_llm(self) -> Union[BaseChatModel, Runnable]:
         """Build OpenAI model with configuration."""
-        # Normalize and configure model
         model_name = self.model
         normalized_model = model_name.lower()
 
@@ -91,7 +90,6 @@ class GPTAgent(Agent):
         if self.max_output_tokens is not None:
             config["max_completion_tokens"] = self.max_output_tokens
 
-        # Handle reasoning models
         reasoning_capable = normalized_model in _REASONING_MODELS
 
         if normalized_model == "gpt-5-high":
@@ -101,12 +99,10 @@ class GPTAgent(Agent):
             reasoning_capable = True
 
         if reasoning_capable:
-            # Enable reasoning content
             include = set(config.get("include") or [])
             include.add("reasoning.encrypted_content")
             config["include"] = sorted(include)
 
-        # Use Responses API for all models (most OpenAI models support it)
         config["output_version"] = "responses/v1"
         config["use_responses_api"] = True
 
@@ -132,7 +128,6 @@ class GPTAgent(Agent):
             on_retry=lambda attempt, exc, delay: None,
         )
 
-        # Parse response
         parser = self.get_response_parser()
         parsed = parser.parse(ai_message)
 

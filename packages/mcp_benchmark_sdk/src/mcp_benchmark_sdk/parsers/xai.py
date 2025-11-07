@@ -25,7 +25,6 @@ class XAIResponseParser:
         raw_reasoning: list[str] = []
         content = message.content
 
-        # Parse content blocks (similar to OpenAI structure)
         if isinstance(content, str):
             if content:
                 primary_chunks.append(content)
@@ -36,13 +35,11 @@ class XAIResponseParser:
 
                 block_type = block.get("type")
 
-                # Output text
                 if block_type in {"output_text", "text", None}:
                     text = block.get("text")
                     if text:
                         primary_chunks.append(text)
 
-                # Reasoning blocks (Grok)
                 elif block_type == "reasoning":
                     summary = block.get("summary")
                     if summary:
@@ -52,20 +49,17 @@ class XAIResponseParser:
                     except RecursionError as e:
                         reasoning_chunks.append(f"[Error: {e}]")
 
-                # Thinking blocks
                 elif block_type == "thinking":
                     thinking_text = block.get("thinking") or block.get("text")
                     if thinking_text:
                         reasoning_chunks.append(thinking_text)
                         raw_reasoning.append(format_json({"thinking": thinking_text}))
 
-                # Fallback
                 else:
                     text = block.get("text")
                     if text:
                         primary_chunks.append(text)
 
-        # Check additional_kwargs for reasoning
         if hasattr(message, "additional_kwargs"):
             extra_reasoning = message.additional_kwargs.get("reasoning")
             if extra_reasoning:
@@ -78,7 +72,6 @@ class XAIResponseParser:
                 except RecursionError as e:
                     reasoning_chunks.append(f"[Error: {e}]")
 
-        # Extract tool calls
         tool_calls = []
         if hasattr(message, "tool_calls") and message.tool_calls:
             for tc in message.tool_calls:

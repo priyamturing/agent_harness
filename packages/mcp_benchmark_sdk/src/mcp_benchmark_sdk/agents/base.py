@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
-import textwrap
 from abc import ABC, abstractmethod
 from typing import Any, Optional, Union
 from uuid import uuid4
@@ -16,16 +14,14 @@ from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 
 from ..constants import (
-    DEFAULT_LLM_TIMEOUT_SECONDS,
     DEFAULT_MAX_STEPS,
     DEFAULT_TOOL_CALL_LIMIT,
     TOOL_CALL_ID_HEX_LENGTH,
 )
-from ..mcp import MCPClientManager, MCPConfig
-from ..parsers import ParsedResponse, ResponseParser
+from ..mcp import MCPClientManager 
+from ..parsers import  ResponseParser
 from ..runtime import RunContext
 from ..tasks import AgentResponse, Result, Task, ToolCall, ToolResult
-from ..utils import retry_with_backoff
 
 
 class Agent(ABC):
@@ -51,7 +47,6 @@ class Agent(ABC):
         self.system_prompt = system_prompt
         self.tool_call_limit = tool_call_limit
 
-        # Runtime state (set during initialize)
         self._task: Optional[Task] = None
         self._run_context: Optional[RunContext] = None
         self._mcp_manager: Optional[MCPClientManager] = None
@@ -59,8 +54,6 @@ class Agent(ABC):
         self._tool_map: dict[str, BaseTool] = {}
         self._llm: Union[BaseChatModel, Runnable, None] = None
         
-        # Ownership tracking for resource cleanup
-        # If agent creates RunContext internally, it's responsible for cleaning it up
         self._owns_run_context: bool = False
 
     # ============ High-Level API ============
@@ -91,14 +84,12 @@ class Agent(ABC):
             For LangSmith tracing, wrap the agent with `with_tracing()`:
                 agent = with_tracing(ClaudeAgent())
         """
-        # Setup run context
         if run_context is None:
             run_context = RunContext() if task.database_id is None else RunContext(database_id=task.database_id)
             owns_context = True
         else:
             owns_context = False
         
-        # Set context ownership
         self._run_context = run_context
         self._owns_run_context = owns_context
 
@@ -156,15 +147,12 @@ class Agent(ABC):
         """
         self._task = task
 
-        # Connect to MCP server
         self._mcp_manager = MCPClientManager()
         await self._mcp_manager.connect(task.mcp, run_context.database_id)
 
-        # Load tools
         self._tools = self._mcp_manager.get_all_tools()
         self._tool_map = {tool.name: tool for tool in self._tools}
 
-        # Build LLM with tools
         self._llm = self._build_llm()
 
         await run_context.notify_status(
@@ -183,7 +171,6 @@ class Agent(ABC):
         results: list[ToolResult] = []
 
         for tc in tool_calls:
-            # Generate unique ID if LLM didn't provide one
             if tc.id is None:
                 tc.id = f"{tc.name}_{uuid4().hex[:TOOL_CALL_ID_HEX_LENGTH]}"
                 if self._run_context:
@@ -237,7 +224,6 @@ class Agent(ABC):
                     loop = asyncio.get_running_loop()
                     output = await loop.run_in_executor(None, tool.invoke, tc.arguments)
 
-                # Serialize output
                 serialized = self._normalize_tool_output(output)
                 
                 # MCP protocol requires JSON-serializable responses
@@ -299,7 +285,6 @@ class Agent(ABC):
         """
         messages: list[BaseMessage] = []
         
-        # Only add system message if prompt exists (not None)
         if self.system_prompt is not None:
             messages.append(SystemMessage(content=self.system_prompt))
 
@@ -355,7 +340,6 @@ class Agent(ABC):
         This method is safe to call multiple times and will attempt
         cleanup even if resources don't explicitly support it.
         """
-        # Clean MCP connections
         if self._mcp_manager:
             await self._mcp_manager.cleanup()
         
@@ -367,35 +351,30 @@ class Agent(ABC):
         # Defensive cleanup of LLM resources
         # Different LangChain providers may or may not have cleanup methods
         if self._llm:
-            # Strategy 1: Check for async close method (most common)
             if hasattr(self._llm, 'aclose'):
                 try:
                     await self._llm.aclose()  # type: ignore[attr-defined]
                 except Exception:
                     pass  
             
-            # Strategy 2: Check for sync close method
             elif hasattr(self._llm, 'close'):
                 try:
                     self._llm.close()  # type: ignore[attr-defined]
                 except Exception:
                     pass
             
-            # Strategy 3: Check for async context manager exit
             elif hasattr(self._llm, '__aexit__'):
                 try:
                     await self._llm.__aexit__(None, None, None)  # type: ignore[attr-defined]
                 except Exception:
                     pass
             
-            # Strategy 4: Direct access to internal httpx async client (ChatOpenAI, etc.)
             elif hasattr(self._llm, 'async_client') and hasattr(self._llm.async_client, 'aclose'):  # type: ignore[attr-defined]
                 try:
                     await self._llm.async_client.aclose()  # type: ignore[attr-defined]
                 except Exception:
                     pass
             
-            # Strategy 5: Direct access to sync client
             elif hasattr(self._llm, 'client') and hasattr(self._llm.client, 'close'):  # type: ignore[attr-defined]
                 try:
                     self._llm.client.close()  # type: ignore[attr-defined]
@@ -450,7 +429,6 @@ class Agent(ABC):
                 {"reasoning": response.reasoning} if response.reasoning else None,
             )
 
-            # Collect reasoning traces
             if response.reasoning:
                 all_reasoning.append(response.reasoning)
 
@@ -472,7 +450,6 @@ class Agent(ABC):
 
             messages.append(ai_message)
 
-            # Check if done
             if response.done and not response.tool_calls:
                 await run_context.notify_status("Agent completed", "info")
 
@@ -485,7 +462,6 @@ class Agent(ABC):
                     error=None,
                 )
 
-            # Execute tool calls
             if response.tool_calls:
                 if remaining_tool_calls is not None:
                     remaining_tool_calls -= len(response.tool_calls)
@@ -494,7 +470,6 @@ class Agent(ABC):
                 tool_messages = self.format_tool_results(response.tool_calls, tool_results)
                 messages.extend(tool_messages)
 
-        # Max steps reached
         await run_context.notify_status("Max steps reached", "warning")
 
         return Result(
@@ -547,20 +522,16 @@ class Agent(ABC):
             return content
         
         if isinstance(content, list):
-            # Extract text from content blocks
             text_parts = []
             for block in content:
                 if isinstance(block, dict):
-                    # Handle {"type": "text", "text": "..."}
                     if block.get("type") == "text":
                         text_parts.append(block.get("text", ""))
                     else:
-                        # For non-text blocks, use repr
                         text_parts.append(repr(block))
                 else:
                     text_parts.append(str(block))
             return "\n".join(text_parts)
         
-        # Fallback: convert to string
         return str(content)
 

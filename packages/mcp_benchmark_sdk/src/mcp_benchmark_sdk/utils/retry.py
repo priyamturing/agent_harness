@@ -58,7 +58,6 @@ def should_retry_error(exc: Exception) -> bool:
     if status_code in RETRY_TRANSIENT_STATUS_CODES:
         return True
 
-    # Anthropic-specific errors
     if anthropic_errors:
         if hasattr(anthropic_errors, "RateLimitError") and isinstance(
             exc, getattr(anthropic_errors, "RateLimitError")
@@ -74,13 +73,11 @@ def should_retry_error(exc: Exception) -> bool:
             if status_code in RETRY_TRANSIENT_STATUS_CODES:
                 return True
 
-    # HTTP errors
     if isinstance(exc, httpx.RequestError):
         return True
     if isinstance(exc, httpx.HTTPStatusError) and status_code in RETRY_TRANSIENT_STATUS_CODES:
         return True
 
-    # Check message for hints
     message = str(exc).lower()
     return any(
         hint in message

@@ -74,7 +74,6 @@ class GrokAgent(Agent):
         if self.max_output_tokens is not None:
             config["max_tokens"] = self.max_output_tokens
 
-        # Enable reasoning for Grok-4
         normalized_model = self.model.lower()
         if normalized_model in {"grok-4", "grok4"}:
             config["output_version"] = "responses/v1"
@@ -109,7 +108,6 @@ class GrokAgent(Agent):
             on_retry=lambda attempt, exc, delay: None,
         )
 
-        # Parse response
         parser = self.get_response_parser()
         parsed = parser.parse(ai_message)
 

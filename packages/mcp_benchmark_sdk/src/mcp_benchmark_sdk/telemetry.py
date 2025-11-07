@@ -35,7 +35,6 @@ def _get_current_trace_url() -> Optional[str]:
         if not run_tree or not run_tree.id:
             return None
         
-        # Fetch the run from LangSmith to get the correct shareable URL
         try:
             client = Client()
             run = client.read_run(str(run_tree.id))
@@ -45,7 +44,6 @@ def _get_current_trace_url() -> Optional[str]:
         except Exception:
             pass
         
-        # Fallback: use the trace_url from run_tree
         if hasattr(run_tree, "trace_url") and run_tree.trace_url:
             return run_tree.trace_url
         
@@ -101,14 +99,12 @@ def configure_langsmith(
     """
     env_vars = {}
     
-    # Determine if tracing should be enabled
     if enabled is None:
         enabled = os.environ.get("LANGCHAIN_TRACING_V2", "").lower() == "true"
     
     if enabled:
         env_vars["LANGCHAIN_TRACING_V2"] = "true"
         
-        # Set API key
         if api_key:
             env_vars["LANGCHAIN_API_KEY"] = api_key
         elif not os.environ.get("LANGCHAIN_API_KEY"):
@@ -117,7 +113,6 @@ def configure_langsmith(
                 "or pass api_key parameter. Get your key from https://smith.langchain.com"
             )
         
-        # Set project name
         if project_name:
             env_vars["LANGCHAIN_PROJECT"] = project_name
         elif not os.environ.get("LANGCHAIN_PROJECT"):
@@ -125,7 +120,6 @@ def configure_langsmith(
     else:
         env_vars["LANGCHAIN_TRACING_V2"] = "false"
     
-    # Apply to environment
     for key, value in env_vars.items():
         os.environ[key] = value
     
@@ -186,14 +180,12 @@ def get_trace_url(run_id: str, project_name: Optional[str] = None) -> Optional[s
         if not client:
             return None
         
-        # Fetch the run to get the correct URL
         run = client.read_run(run_id)
         if run and run.url:
             return run.url
     except Exception:
         pass
     
-    # Fallback format
     project = project_name or os.environ.get("LANGCHAIN_PROJECT", "default")
     return f"https://smith.langchain.com/public/{project}/r/{run_id}"
 
@@ -263,7 +255,6 @@ class TracingAgent:
             agent: The agent to wrap
         """
         self._agent = agent
-        # Delegate all attributes to wrapped agent
         self.__dict__.update({k: v for k, v in agent.__dict__.items() if not k.startswith('_')})
     
     def __getattr__(self, name: str):
@@ -283,39 +274,31 @@ class TracingAgent:
         Metadata includes model, scenario, database_id, session_id for filtering.
         """
         if not is_tracing_enabled():
-            # Tracing disabled - run agent directly
             return await self._agent.run(task, max_steps, run_context=run_context)
         
-        # Build trace metadata
         model_name = self._agent.model if hasattr(self._agent, "model") else "unknown"  # type: ignore[attr-defined]
         
-        # Extract scenario info from task metadata
         scenario_name = "task"
         run_number = None
         if task and hasattr(task, "metadata") and task.metadata:
             scenario_name = task.metadata.get("scenario_name", scenario_name)
             run_number = task.metadata.get("run_number")
         
-        # Build readable trace name: "grok-4: scenario_name (run 2)"
         trace_name = f"{model_name}: {scenario_name}"
         if run_number is not None:
             trace_name = f"{trace_name} (run {run_number})"
         
-        # Get database_id (from run_context if provided, or will be created by agent)
         db_id = run_context.database_id if run_context else (task.database_id if task and task.database_id else None)
         
-        # Get session_id and thread_id for grouping (LangSmith Threads feature)
         session_id = None
         thread_id = None
         if task and task.metadata:
             session_id = task.metadata.get("session_id")
             thread_id = task.metadata.get("thread_id")
             
-            # Generate thread_id if not provided (unique per model+scenario+run)
             if not thread_id and session_id:
                 thread_id = f"{session_id}_{model_name}_{scenario_name}_run{run_number or 1}"
         
-        # Create metadata for filtering/search
         trace_metadata = {
             "model": model_name,
             "scenario": scenario_name,
@@ -329,12 +312,10 @@ class TracingAgent:
         if thread_id:
             trace_metadata["thread_id"] = thread_id
         
-        # Use traceable wrapper with descriptive name
         @traceable(name=trace_name, run_type="chain", metadata=trace_metadata)
         async def _traced_run():
             result = await self._agent.run(task, max_steps, run_context=run_context)
             
-            # Populate LangSmith trace URL in result
             result.langsmith_url = _get_current_trace_url()
             
             return result
