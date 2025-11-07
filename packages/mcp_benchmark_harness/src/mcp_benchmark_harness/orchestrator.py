@@ -9,12 +9,16 @@ from typing import Any, Callable, Optional
 from uuid import uuid4
 
 import httpx
+from mcp_benchmark_agents import (
+    Agent,
+    MCPConfig,
+    Result,
+    RunContext,
+    RunObserver,
+    Verifier,
+    VerifierResult,
+)
 
-from ..agents import Agent
-from ..mcp import MCPConfig
-from ..runtime import RunContext, RunObserver
-from ..tasks import Result
-from ..verifiers import Verifier, VerifierResult
 from .loader import create_verifier_from_definition, load_harness_directory, load_harness_file, scenario_to_task
 from .scenario import Scenario, VerifierDefinition
 

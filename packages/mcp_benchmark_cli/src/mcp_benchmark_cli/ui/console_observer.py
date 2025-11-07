@@ -2,8 +2,8 @@
 
 from typing import Any, Optional
 
+from mcp_benchmark_harness.orchestrator import VerifierRunner
 from mcp_benchmark_sdk import RunObserver, VerifierResult
-from mcp_benchmark_sdk.harness.orchestrator import VerifierRunner
 from rich.console import Console
 from rich.table import Table
 
@@ -121,4 +121,3 @@ class ConsoleObserver(RunObserver):
             self.console.print(f"[yellow]Warning:[/yellow] {message}")
         else:
             self.console.print(f"[dim]{message}[/dim]")
-

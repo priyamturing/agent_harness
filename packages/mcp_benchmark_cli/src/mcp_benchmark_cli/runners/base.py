@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
+from mcp_benchmark_harness.orchestrator import VerifierRunner
 from mcp_benchmark_sdk import MCPConfig, RunContext, scenario_to_task
-from mcp_benchmark_sdk.harness.orchestrator import VerifierRunner
 
 from ..agent_factory import create_agent_from_string
 from ..session.manager import SessionManager
@@ -132,4 +132,3 @@ def save_benchmark_result(
         verifier_results=verifier_results,
     )
     return result_file
-

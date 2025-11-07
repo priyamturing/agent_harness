@@ -188,7 +188,7 @@ async def _run_single_textual(
         try:
             # Import here to avoid circular dependency
             from mcp_benchmark_sdk import scenario_to_task
-            from mcp_benchmark_sdk.harness.orchestrator import VerifierRunner
+            from mcp_benchmark_harness.orchestrator import VerifierRunner
             
             # Create RunContext (automatically generates database_id for isolation)
             run_context = RunContext()
@@ -282,4 +282,3 @@ async def _run_single_textual(
             import traceback
             await queue.put(traceback.format_exc())
             raise
-

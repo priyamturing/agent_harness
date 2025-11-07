@@ -1,8 +1,27 @@
 # MCP Benchmark Packages
 
-This directory contains two packages:
+This directory now contains four packages:
 
-## 1. `mcp_benchmark_sdk/` - Core SDK
+## 1. `mcp_benchmark_agents/` - Agent Runtime Library
+
+Everything required to build MCP-aware agents (LLM providers, parsers, telemetry,
+verifiers, runtime helpers).
+
+```bash
+cd packages/mcp_benchmark_agents
+pip install -e .
+```
+
+## 2. `mcp_benchmark_harness/` - Benchmark Harness
+
+Scenario loader + orchestrator that depends on the agent runtime.
+
+```bash
+cd packages/mcp_benchmark_harness
+pip install -e .
+```
+
+## 3. `mcp_benchmark_sdk/` - Meta SDK
 
 The SDK for building and running MCP-based LLM agent benchmarks.
 
@@ -38,7 +57,7 @@ async def main():
 asyncio.run(main())
 ```
 
-## 2. `mcp_benchmark_cli/` - CLI Tool
+## 4. `mcp_benchmark_cli/` - CLI Tool
 
 Command-line interface that uses the SDK to run benchmarks from JSON harness files.
 
@@ -67,12 +86,14 @@ mcp-benchmark --prompt-file test_harness.json \
   --model claude-sonnet-4-5
 ```
 
-## Installation (Both Packages)
+## Installing everything
 
-To install both packages at once:
+To install all packages at once:
 
 ```bash
 # From the repository root
+pip install -e packages/mcp_benchmark_agents
+pip install -e packages/mcp_benchmark_harness
 pip install -e packages/mcp_benchmark_sdk
 pip install -e packages/mcp_benchmark_cli
 ```
@@ -89,6 +110,7 @@ pip install -e packages/mcp_benchmark_cli
 ## Documentation
 
 See individual package READMEs for detailed documentation:
+- [`mcp_benchmark_agents/README.md`](./mcp_benchmark_agents/README.md)
+- [`mcp_benchmark_harness/README.md`](./mcp_benchmark_harness/README.md)
 - [`mcp_benchmark_sdk/README.md`](./mcp_benchmark_sdk/README.md)
 - [`mcp_benchmark_cli/README.md`](./mcp_benchmark_cli/README.md)
-

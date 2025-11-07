@@ -50,7 +50,7 @@ async def run_all_plain(
             try:
                 # Import here to avoid circular dependency
                 from mcp_benchmark_sdk import scenario_to_task
-                from mcp_benchmark_sdk.harness.orchestrator import VerifierRunner
+                from mcp_benchmark_harness.orchestrator import VerifierRunner
                 
                 # Create RunContext
                 run_context = RunContext()
@@ -155,4 +155,3 @@ async def run_all_plain(
     successful = sum(1 for r in run_summaries if r["success"])
     console.print(f"Successful: [green]{successful}[/green]")
     console.print(f"Failed: [red]{len(run_summaries) - successful}[/red]")
-

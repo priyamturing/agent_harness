@@ -7,10 +7,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
+from mcp_benchmark_agents import DatabaseVerifier, MCPConfig, Task, Verifier
 
-from ..mcp import MCPConfig
-from ..tasks import Task
-from ..verifiers import DatabaseVerifier, Verifier
 from .scenario import Scenario, ScenarioPrompt, VerifierDefinition
 
 

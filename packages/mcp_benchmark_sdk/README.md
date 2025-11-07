@@ -47,6 +47,16 @@ pip install mcp-benchmark-sdk
 - Python 3.10+
 - API keys for LLM providers (OpenAI, Anthropic, Google, xAI, etc.)
 
+### Package structure
+
+The SDK is now composed of two installable libraries:
+
+1. `mcp-benchmark-agents` – core agent runtime (LLM adapters, MCP clients, parsers, telemetry, verifiers).
+2. `mcp-benchmark-harness` – scenario loader + benchmark orchestrator that depends on the agent library.
+
+Installing `mcp-benchmark-sdk` brings both packages along for a batteries-included experience, but you can
+also install either library individually when you only need part of the stack.
+
 ---
 
 ## Quick Reference

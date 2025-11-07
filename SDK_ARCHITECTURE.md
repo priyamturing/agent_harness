@@ -24,6 +24,11 @@ The MCP Benchmark SDK is a Python framework for building and running LLM agent b
 - **Test Harness**: Systematic benchmarking across models and scenarios
 - **LangSmith Integration**: Built-in tracing support for debugging
 
+> **Packaging note:** The SDK codebase is now composed of two installable libraries:
+> `mcp-benchmark-agents` (agent runtime, MCP clients, verifiers) and
+> `mcp-benchmark-harness` (scenario loader + orchestrator). The published
+> `mcp-benchmark-sdk` meta-package simply depends on both when you want the entire stack.
+
 ---
 
 ## Core Components
@@ -1309,4 +1314,3 @@ The design prioritizes:
 - **Provider agnosticism**: Consistent interface across LLM providers
 
 This architecture enables robust, scalable benchmarking while remaining simple for common use cases.
-
