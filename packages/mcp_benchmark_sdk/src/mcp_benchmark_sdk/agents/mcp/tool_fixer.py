@@ -1,0 +1,118 @@
+"""Tool schema fixer for Python reserved keywords."""
+
+from typing import Any, Literal
+
+from langchain_core.tools import BaseTool
+from pydantic import BaseModel, create_model
+
+
+# Python reserved keywords that can't be used as parameter names
+RESERVED_KEYWORDS = {
+    "self", "class", "def", "return", "if", "else", "elif", "while", "for",
+    "in", "is", "and", "or", "not", "None", "True", "False", "import",
+    "from", "as", "with", "try", "except", "finally", "raise", "yield",
+    "lambda", "pass", "break", "continue", "global", "nonlocal", "del",
+    "assert", "async", "await", "match", "case", "type",
+}
+
+
+def fix_tool_schemas(tools: list[BaseTool]) -> list[BaseTool]:
+    """Fix MCP tools that have Python reserved keywords as parameter names.
+
+    When MCP servers expose tools with parameter names that are Python reserved 
+    keywords (like 'class', 'def', 'return', etc.), this function creates wrapper 
+    tools that rename those parameters by appending an underscore (e.g., 'self' → 'self_').
+    The wrappers automatically translate parameter names back when calling the original tool.
+
+    Args:
+        tools (list[BaseTool]): List of LangChain BaseTool instances loaded from 
+            MCP servers. May contain tools with reserved keyword parameters.
+
+    Returns:
+        list[BaseTool]: List of tools where any with reserved keyword parameters 
+            have been replaced with wrapper tools that use safe parameter names. 
+            Tools without conflicts are returned unchanged. All tool metadata, 
+            configuration, and behavior is preserved.
+    """
+    fixed_tools = []
+
+    for tool in tools:
+        if not hasattr(tool, "args_schema") or tool.args_schema is None:
+            fixed_tools.append(tool)
+            continue
+
+        schema = tool.args_schema
+        
+        if not isinstance(schema, type) or not issubclass(schema, BaseModel):
+            fixed_tools.append(tool)
+            continue
+
+        schema_fields = schema.model_fields
+        has_reserved = any(field_name in RESERVED_KEYWORDS for field_name in schema_fields)
+
+        if not has_reserved:
+            fixed_tools.append(tool)
+            continue
+
+        new_fields = {}
+        field_mapping = {}
+
+        for field_name, field_info in schema_fields.items():
+            if field_name in RESERVED_KEYWORDS:
+                new_name = f"{field_name}_"
+                field_mapping[field_name] = new_name
+                new_fields[new_name] = (field_info.annotation, field_info)
+            else:
+                new_fields[field_name] = (field_info.annotation, field_info)
+
+        new_schema = create_model(
+            f"{schema.__name__}_Fixed",
+            **new_fields,
+        )
+
+        # Create wrapper tool that translates parameters
+        # IMPORTANT: Copy all metadata and configuration from original tool
+        class FixedTool(BaseTool):
+            name: str = tool.name
+            description: str = tool.description
+            args_schema: type[BaseModel] = new_schema  # type: ignore[assignment]
+            
+            # Copy critical tool configuration and metadata
+            return_direct: bool = tool.return_direct
+            verbose: bool = tool.verbose
+            callbacks: Any = tool.callbacks
+            tags: Any = tool.tags
+            metadata: Any = tool.metadata
+            handle_tool_error: Any = tool.handle_tool_error
+            handle_validation_error: Any = tool.handle_validation_error
+            response_format: Literal['content', 'content_and_artifact'] = tool.response_format  # type: ignore[assignment]
+            
+            # Store field mapping and original tool to avoid closure variable capture bug
+            _field_mapping: dict[str, str] = field_mapping
+            _reverse_mapping: dict[str, str] = {v: k for k, v in field_mapping.items()}
+            _original_tool: BaseTool = tool
+
+            async def _arun(self, run_manager: Any = None, **kwargs: Any) -> Any:
+                original_kwargs = {}
+                for key, value in kwargs.items():
+                    original_name = self._reverse_mapping.get(key, key)
+                    original_kwargs[original_name] = value
+
+                if hasattr(self._original_tool, "_arun"):
+                    return await self._original_tool._arun(run_manager=run_manager, **original_kwargs)
+                else:
+                    return self._original_tool._run(run_manager=run_manager, **original_kwargs)
+
+            def _run(self, run_manager: Any = None, **kwargs: Any) -> Any:
+                original_kwargs = {}
+                for key, value in kwargs.items():
+                    original_name = self._reverse_mapping.get(key, key)
+                    original_kwargs[original_name] = value
+
+                return self._original_tool._run(run_manager=run_manager, **original_kwargs)
+
+        fixed_tool = FixedTool()
+        fixed_tools.append(fixed_tool)
+
+    return fixed_tools
+

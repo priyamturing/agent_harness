@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional, Union
 
-from ..agents import Agent, ClaudeAgent, GeminiAgent, GPTAgent, GrokAgent
-from ..telemetry import TracingAgent, with_tracing
+from ..agents import Agent, ClaudeAgent, GeminiAgent, GPTAgent, GrokAgent, TracingAgent, with_tracing
 
 
 def create_agent(

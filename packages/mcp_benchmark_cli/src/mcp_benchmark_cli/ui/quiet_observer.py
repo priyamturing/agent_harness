@@ -2,7 +2,7 @@
 
 from typing import Any, Optional
 
-from mcp_benchmark_sdk import RunObserver
+from mcp_benchmark_sdk.agents.runtime import RunObserver
 
 
 class QuietObserver(RunObserver):

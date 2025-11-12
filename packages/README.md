@@ -17,23 +17,37 @@ pip install -e .
 
 ```python
 import asyncio
-from mcp_benchmark_sdk import ClaudeAgent, Task, MCPConfig
+from pathlib import Path
+from mcp_benchmark_sdk import TestHarness, TestHarnessConfig, MCPConfig, create_agent
 
 async def main():
-    agent = ClaudeAgent()
-    
-    task = Task(
-        prompt="Create a bug issue in project DEMO",
-        mcps=[
-            MCPConfig(
-                name="jira",
-                url="http://localhost:8015/mcp"
-            )
-        ]
+    # Configure MCP server
+    mcp_config = MCPConfig(
+        name="jira",
+        url="http://localhost:8015/mcp",
+        transport="streamable_http"
     )
     
-    result = await agent.run(task)
-    print(f"Success: {result.success}")
+    # Create harness
+    harness = TestHarness(
+        harness_path=Path("benchmarks/task.json"),
+        config=TestHarnessConfig(
+            mcp=mcp_config,
+            max_steps=1000,
+            tool_call_limit=1000,
+        )
+    )
+    
+    # Run benchmarks
+    results = await harness.run(
+        models=["gpt-4o", "claude-3-5-sonnet-20241022"],
+        agent_factory=create_agent,
+    )
+    
+    # Print results
+    for result in results:
+        status = "✓ PASS" if result.success else "✗ FAIL"
+        print(f"{result.model} - {result.scenario_id}: {status}")
 
 asyncio.run(main())
 ```
@@ -59,12 +73,12 @@ export OPENAI_API_KEY="sk-..."
 export ANTHROPIC_API_KEY="sk-ant-..."
 
 # Run a benchmark
-mcp-benchmark --prompt-file test_harness.json --model gpt-5-high
+mcp-benchmark --prompt-file test_harness.json --model gpt-4o
 
 # Run with multiple models
 mcp-benchmark --prompt-file test_harness.json \
-  --model gpt-5-high \
-  --model claude-sonnet-4-5
+  --model gpt-4o \
+  --model claude-3-5-sonnet-20241022
 ```
 
 ## Installation (Both Packages)
@@ -79,7 +93,7 @@ pip install -e packages/mcp_benchmark_cli
 
 ## Requirements
 
-- **MCP Server**: You must have a Jira MCP server running on `http://localhost:8015/mcp`
+- **MCP Server**: You must have an MCP server running (e.g., `http://localhost:8015/mcp`)
 - **API Keys**: Set environment variables for the providers you want to use:
   - `OPENAI_API_KEY`
   - `ANTHROPIC_API_KEY`
@@ -89,6 +103,22 @@ pip install -e packages/mcp_benchmark_cli
 ## Documentation
 
 See individual package READMEs for detailed documentation:
-- [`mcp_benchmark_sdk/README.md`](./mcp_benchmark_sdk/README.md)
-- [`mcp_benchmark_cli/README.md`](./mcp_benchmark_cli/README.md)
+- [`mcp_benchmark_sdk/README.md`](./mcp_benchmark_sdk/README.md) - Complete SDK reference
+- [`mcp_benchmark_cli/README.md`](./mcp_benchmark_cli/README.md) - CLI usage guide
 
+## Key Differences
+
+| Feature | SDK | CLI |
+|---------|-----|-----|
+| **Use Case** | Programmatic integration | Quick testing |
+| **Interface** | Python API | Command-line |
+| **UI** | Custom observers | Plain/TUI/Quiet modes |
+| **Session Management** | Manual | Automatic |
+| **Flexibility** | Full control | Predefined workflows |
+| **Result Export** | Custom formats | JSON artifacts |
+
+## Quick Links
+
+- **SDK Quick Start**: [`mcp_benchmark_sdk/QUICKSTART.md`](./mcp_benchmark_sdk/QUICKSTART.md)
+- **Examples**: [`mcp_benchmark_sdk/examples/`](./mcp_benchmark_sdk/examples/)
+- **Architecture**: [`../SDK_ARCHITECTURE.md`](../SDK_ARCHITECTURE.md)

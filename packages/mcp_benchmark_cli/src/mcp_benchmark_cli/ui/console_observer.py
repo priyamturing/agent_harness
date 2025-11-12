@@ -1,11 +1,14 @@
 """Console observer for displaying agent execution."""
 
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
-from mcp_benchmark_sdk import RunObserver, VerifierResult
-from mcp_benchmark_sdk.harness.orchestrator import VerifierRunner
+from mcp_benchmark_sdk.agents.runtime import RunObserver
+from mcp_benchmark_sdk.harness.verifiers import VerifierResult
 from rich.console import Console
 from rich.table import Table
+
+if TYPE_CHECKING:
+    from mcp_benchmark_sdk.harness.orchestrator import VerifierRunner
 
 
 class ConsoleObserver(RunObserver):
@@ -15,7 +18,7 @@ class ConsoleObserver(RunObserver):
         self,
         console: Optional[Console] = None,
         prefix: Optional[str] = None,
-        verifier_runner: Optional[VerifierRunner] = None,
+        verifier_runner: Optional["VerifierRunner"] = None,
     ):
         """Initialize console observer.
 

@@ -8,9 +8,8 @@ from typing import Any, Optional
 
 import httpx
 
-from ..mcp import MCPConfig
-from ..tasks import Task
-from ..verifiers import DatabaseVerifier, Verifier
+from ..agents import MCPConfig, Task
+from .verifiers import DatabaseVerifier, Verifier
 from .scenario import Scenario, ScenarioPrompt, VerifierDefinition
 
 
@@ -119,7 +118,7 @@ def load_harness_directory(directory: Path) -> dict[str, list[Scenario]]:
             if scenarios:
                 result[json_file.stem] = scenarios
         except Exception as exc:
-            raise ValueError(f"Failed to load {json_file.name}: {exc}") from exc
+            raise ValueError(f"Failed to load {json_file.name}: {exc!r}") from exc
 
     if not result:
         raise ValueError(f"No valid scenarios found in directory: {directory}")
@@ -148,17 +147,30 @@ def scenario_to_task(
 
     Returns:
         Tuple of (Task, list of VerifierDefinitions) for independent orchestration
+        
+    Raises:
+        ValueError: If scenario contains multiple prompts (not supported)
     """
+    # Validation: Only single-prompt scenarios are supported
+    # Note: The Scenario.__post_init__ should already enforce this,
+    # but we double-check here for clarity and defense-in-depth
+    if len(scenario.prompts) != 1:
+        raise ValueError(
+            f"Scenario '{scenario.scenario_id}' contains {len(scenario.prompts)} prompts. "
+            f"This SDK only supports single-prompt scenarios (exactly 1 prompt per scenario). "
+            f"Multi-prompt scenarios from external harness files cannot be used. "
+            f"Please split this scenario into {len(scenario.prompts)} separate single-prompt scenarios."
+        )
+    
     verifier_defs: list[VerifierDefinition] = []
 
     for prompt in scenario.prompts:
         for verifier_def in prompt.verifiers:
             verifier_defs.append(verifier_def)
 
-    if scenario.conversation_mode:
-        prompt_text = "\n".join(p.prompt_text for p in scenario.prompts)
-    else:
-        prompt_text = scenario.prompts[0].prompt_text if scenario.prompts else ""
+    # Since we only support single prompts, conversation_mode has no effect
+    # We always use the first (and only) prompt
+    prompt_text = scenario.prompts[0].prompt_text
 
     task = Task(
         prompt=prompt_text,

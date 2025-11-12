@@ -22,7 +22,8 @@ warnings.filterwarnings("ignore", message=".*additionalProperties.*")
 
 import typer
 from dotenv import load_dotenv
-from mcp_benchmark_sdk import MCPConfig, load_harness_file
+from mcp_benchmark_sdk.agents.mcp import MCPConfig
+from mcp_benchmark_sdk.harness.loader import load_harness_file
 from rich.console import Console
 
 from .config import DEFAULT_JIRA_MCP
@@ -106,6 +107,36 @@ def main(
         "--langsmith-project",
         help="LangSmith project name (defaults to MCP_BENCHMARK)",
     ),
+    langfuse: bool = typer.Option(
+        False,
+        "--langfuse",
+        help="Enable Langfuse tracing (requires LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY)",
+    ),
+    langfuse_public_key: Optional[str] = typer.Option(
+        None,
+        "--langfuse-public-key",
+        help="Langfuse public API key (overrides LANGFUSE_PUBLIC_KEY)",
+    ),
+    langfuse_secret_key: Optional[str] = typer.Option(
+        None,
+        "--langfuse-secret-key",
+        help="Langfuse secret API key (overrides LANGFUSE_SECRET_KEY)",
+    ),
+    langfuse_base_url: Optional[str] = typer.Option(
+        None,
+        "--langfuse-base-url",
+        help="Langfuse base URL (overrides LANGFUSE_BASE_URL)",
+    ),
+    langfuse_environment: Optional[str] = typer.Option(
+        None,
+        "--langfuse-environment",
+        help="Langfuse tracing environment label (overrides LANGFUSE_TRACING_ENVIRONMENT)",
+    ),
+    langfuse_release: Optional[str] = typer.Option(
+        None,
+        "--langfuse-release",
+        help="Release identifier reported to Langfuse (overrides LANGFUSE_RELEASE)",
+    ),
 ) -> None:
     """Run benchmarks using the MCP Benchmark SDK."""
     # Load environment
@@ -116,6 +147,8 @@ def main(
     # Generate unique session_id for this benchmark invocation
     session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
     
+    langfuse_active = False
+
     # Configure LangSmith tracing if requested
     if langsmith:
         from mcp_benchmark_sdk import configure_langsmith
@@ -137,6 +170,34 @@ def main(
         project = os.environ.get("LANGCHAIN_PROJECT", "default")
         console.print(f"  Project: [cyan]{project}[/cyan]")
         console.print(f"  Session: [dim]{session_id}[/dim]")
+
+    # Configure Langfuse tracing if requested
+    if langfuse:
+        from mcp_benchmark_sdk import configure_langfuse
+
+        try:
+            env_vars = configure_langfuse(
+                public_key=langfuse_public_key,
+                secret_key=langfuse_secret_key,
+                base_url=langfuse_base_url,
+                environment=langfuse_environment,
+                release=langfuse_release,
+                enabled=True,
+            )
+            _print_langfuse_status(session_id, env_vars)
+            langfuse_active = True
+        except ValueError as e:
+            console.print(f"[yellow]⚠ Langfuse setup failed: {e}[/yellow]")
+            console.print(f"[dim]Continuing without Langfuse tracing...[/dim]")
+    else:
+        try:
+            from mcp_benchmark_sdk import is_langfuse_enabled
+        except ImportError:
+            is_langfuse_enabled = lambda: False  # type: ignore
+
+        if is_langfuse_enabled():
+            _print_langfuse_status(session_id)
+            langfuse_active = True
 
     # Determine harness file or directory
     harness_path = prompt_file or harness_file
@@ -172,6 +233,7 @@ def main(
                 max_concurrent_runs=max_concurrent_runs,
                 tool_call_limit=tool_call_limit,
                 session_id=session_id,
+                langfuse_tracing=langfuse_active,
             )
         )
     except KeyboardInterrupt:
@@ -224,6 +286,23 @@ def _load_scenarios(harness_path: Path) -> list[dict]:
     return scenario_batches
 
 
+def _print_langfuse_status(session_id: str, env_overrides: Optional[dict[str, str]] = None) -> None:
+    env_overrides = env_overrides or {}
+
+    def _get(name: str, default: Optional[str] = None) -> Optional[str]:
+        return env_overrides.get(name) or os.environ.get(name) or default
+
+    base_url = _get("LANGFUSE_BASE_URL") or _get("LANGFUSE_HOST") or "https://cloud.langfuse.com"
+    environment = _get("LANGFUSE_TRACING_ENVIRONMENT", "default")
+
+    console.print("[green]✓ Langfuse tracing enabled[/green]")
+    console.print(f"  Environment: [cyan]{environment}[/cyan]")
+    console.print(f"  Session: [dim]{session_id}[/dim]")
+    console.print(f"  View traces at: [dim]{base_url}[/dim]")
+
+
+
+
 async def run_benchmark_batched(
     scenario_batches: list[dict],
     session_name: str,
@@ -237,6 +316,7 @@ async def run_benchmark_batched(
     max_concurrent_runs: int,
     tool_call_limit: int,
     session_id: str,
+    langfuse_tracing: bool,
 ) -> None:
     """Run all scenario batches together in one session."""
     # Create MCP config
@@ -269,6 +349,7 @@ async def run_benchmark_batched(
             tool_call_limit=tool_call_limit,
             session_id=session_id,
             console=console,
+            langfuse_tracing=langfuse_tracing,
         )
     elif ui_mode == "textual" or (ui_mode == "auto" and len(all_run_configs) > 1):
         console.print(f"[dim]Total runs: {len(all_run_configs)}[/dim]")
@@ -286,6 +367,7 @@ async def run_benchmark_batched(
             tool_call_limit=tool_call_limit,
             session_id=session_id,
             console=console,
+            langfuse_tracing=langfuse_tracing,
         )
     else:
         console.print(f"[dim]Total runs: {len(all_run_configs)}[/dim]")
@@ -302,6 +384,7 @@ async def run_benchmark_batched(
             tool_call_limit=tool_call_limit,
             session_id=session_id,
             console=console,
+            langfuse_tracing=langfuse_tracing,
         )
 
 
@@ -338,4 +421,3 @@ def _build_run_configs(
 
 if __name__ == "__main__":
     app()
-

@@ -2,7 +2,9 @@
 
 from typing import Any, Optional
 
-from mcp_benchmark_sdk import Agent, create_agent as sdk_create_agent, with_tracing
+from mcp_benchmark_sdk.agents.core import Agent
+from mcp_benchmark_sdk.agents.telemetry import with_tracing
+from mcp_benchmark_sdk.harness.agent_factory import create_agent as sdk_create_agent
 
 from .openrouter_agent import OpenRouterAgent
 from .qwen_agent import QwenAgent

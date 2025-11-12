@@ -10,9 +10,10 @@ from typing import Any, Optional
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_openai import ChatOpenAI
-from mcp_benchmark_sdk import Agent, AgentResponse
-from mcp_benchmark_sdk.parsers import OpenAIResponseParser, ResponseParser
-from mcp_benchmark_sdk.utils import retry_with_backoff
+from mcp_benchmark_sdk.agents.core import Agent
+from mcp_benchmark_sdk.agents.tasks import AgentResponse
+from mcp_benchmark_sdk.agents.parsers import OpenAIResponseParser, ResponseParser
+from mcp_benchmark_sdk.agents.utils import retry_with_backoff
 
 
 class QwenAgent(Agent):

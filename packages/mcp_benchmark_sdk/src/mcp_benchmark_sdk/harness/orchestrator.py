@@ -10,25 +10,35 @@ from uuid import uuid4
 
 import httpx
 
-from ..agents import Agent
-from ..mcp import MCPConfig
-from ..runtime import RunContext, RunObserver
-from ..tasks import Result
-from ..verifiers import Verifier, VerifierResult
+from ..agents import Agent, MCPConfig, RunContext, RunObserver, Result
+from ..agents.constants import HTTP_CLIENT_TIMEOUT_SECONDS
+from .verifiers import Verifier, VerifierResult
 from .loader import create_verifier_from_definition, load_harness_directory, load_harness_file, scenario_to_task
 from .scenario import Scenario, VerifierDefinition
 
 
 @dataclass
 class RunResult:
-    """Result of a single test run."""
+    """Result of a single test run.
+    
+    Attributes:
+        model: Model identifier used for this run
+        scenario_id: Unique scenario identifier
+        scenario_name: Human-readable scenario name
+        run_number: Run number (for multiple runs per scenario)
+        success: Overall success status (agent + verifiers)
+        result: Agent execution result (None if agent failed to initialize/run)
+        verifier_results: Results from all verifiers
+        error: Error message if run failed
+        metadata: Additional metadata about the run
+    """
 
     model: str
     scenario_id: str
     scenario_name: str
     run_number: int
     success: bool
-    result: Result
+    result: Optional[Result]
     verifier_results: list[VerifierResult]
     error: Optional[str] = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -176,7 +186,7 @@ class TestHarness:
         """
         run_configs = self._build_run_configs(models)
         
-        async with httpx.AsyncClient(timeout=30.0) as http_client:
+        async with httpx.AsyncClient(timeout=HTTP_CLIENT_TIMEOUT_SECONDS) as http_client:
             semaphore = asyncio.Semaphore(self.config.max_concurrent_runs)
             tasks = []
 
@@ -202,7 +212,7 @@ class TestHarness:
                         scenario_name=config["scenario"].name,
                         run_number=config["run_num"],
                         success=False,
-                        result=None,  # type: ignore
+                        result=None,
                         verifier_results=[],
                         error=str(result),
                     )
@@ -339,7 +349,7 @@ class TestHarness:
                     scenario_name=scenario.name,
                     run_number=run_num,
                     success=False,
-                    result=None,  # type: ignore
+                    result=None,
                     verifier_results=[],
                     error=str(exc),
                 )

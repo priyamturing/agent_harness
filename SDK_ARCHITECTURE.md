@@ -38,7 +38,7 @@ The MCP Benchmark SDK is a Python framework for building and running LLM agent b
                               │
 ┌─────────────────────────────────────────────────────────────────┐
 │                   ORCHESTRATION LAYER                            │
-│  HarnessOrchestrator, VerifierRunner                            │
+│  TestHarness, VerifierRunner                                    │
 └─────────────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────────────┐
@@ -84,7 +84,7 @@ The MCP Benchmark SDK is a Python framework for building and running LLM agent b
 #### 2. Orchestration Layer
 - **Purpose**: Manages multi-model, multi-scenario benchmark execution
 - **Components**:
-  - `HarnessOrchestrator`: Coordinates concurrent execution
+  - `TestHarness`: Coordinates concurrent execution
   - `VerifierRunner`: Executes verifiers after agent completion
 
 #### 3. Agent Layer
@@ -238,7 +238,7 @@ This flow shows how the test harness orchestrates multiple benchmark runs across
 sequenceDiagram
     participant User
     participant Harness as TestHarness
-    participant Orchestrator as HarnessOrchestrator
+    participant Orchestrator as TestHarness
     participant AgentFactory
     participant Agent
     participant RunContext
@@ -425,7 +425,7 @@ This shows how verifiers validate agent execution results.
 
 ```mermaid
 sequenceDiagram
-    participant Harness as HarnessOrchestrator
+    participant Harness as TestHarness
     participant Agent
     participant VerifierRunner
     participant DatabaseVerifier
@@ -821,26 +821,29 @@ results = await harness.run(
 
 ---
 
-### 9. LangSmith Integration for Tracing
+### 9. LangSmith and Langfuse Integration for Tracing
 
-**Decision**: Optional LangSmith tracing via wrapper agent.
+**Decision**: Optional tracing via LangSmith and/or Langfuse with a shared helper.
 
 **Rationale**:
-- **Debugging**: See full execution trace in LangSmith
-- **Optional**: Works without LangSmith (no hard dependency)
-- **Non-invasive**: Wraps agent without modifying internals
+- **Debugging**: View full execution traces in the observability backend you prefer
+- **Optional**: Works without either service (no hard dependency)
+- **Non-invasive**: Wraps the agent and injects LangChain callbacks without changing business logic
 
 **Implementation**:
 
 ```python
-# Enable tracing with environment variable
-export LANGCHAIN_TRACING_V2=true
-export LANGCHAIN_API_KEY=...
+# LangSmith
+configure_langsmith(project_name="bench", enabled=True)
 
-# Automatic tracing with wrapper
+# Langfuse
+configure_langfuse(public_key="pk_...", secret_key="sk_...", base_url="https://cloud.langfuse.com")
+
+# Automatic tracing with wrapper (enables both backends when configured)
 agent = with_tracing(ClaudeAgent())
 result = await agent.run(task)
-# Trace URL in result.langsmith_url
+print(result.langsmith_url)  # Optional
+print(result.langfuse_url)   # Optional
 
 # Or use create_traced_agent factory
 agent = create_traced_agent("gpt-4o")
@@ -854,14 +857,14 @@ class TracingAgent(Agent):
         self._agent = agent
         
     async def run(self, task, max_steps, run_context):
-        # Wraps execution in LangSmith trace
         @traceable(name=f"agent_run_{self._agent.__class__.__name__}")
         async def traced_run():
-            return await self._agent.run(task, max_steps, run_context)
+            result = await self._agent.run(task, max_steps, run_context)
+            result.langsmith_url = get_trace_url()
+            result.langfuse_url = _get_langfuse_trace_url(self._agent)
+            return result
         
-        result = await traced_run()
-        result.langsmith_url = get_trace_url()
-        return result
+        return await traced_run()
 ```
 
 ---
@@ -1309,4 +1312,3 @@ The design prioritizes:
 - **Provider agnosticism**: Consistent interface across LLM providers
 
 This architecture enables robust, scalable benchmarking while remaining simple for common use cases.
-

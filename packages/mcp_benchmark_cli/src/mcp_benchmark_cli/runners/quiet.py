@@ -1,16 +1,19 @@
 """Quiet mode runner with progress bar only."""
 
 import asyncio
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
 
 import httpx
-from mcp_benchmark_sdk import MCPConfig, RunContext
+from mcp_benchmark_sdk.agents.mcp import MCPConfig
+from mcp_benchmark_sdk.agents.runtime import RunContext
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn
 
 from ..config import RESULTS_ROOT
 from ..session.manager import SessionManager
+from ..tracing import langfuse_run_context
 from ..ui import QuietObserver
 from .base import run_single_benchmark, save_benchmark_result
 
@@ -27,6 +30,7 @@ async def run_all_quiet(
     tool_call_limit: int,
     session_id: str,
     console: Console,
+    langfuse_tracing: bool,
 ) -> None:
     """Run all configs in quiet mode with progress bar only.
     
@@ -78,6 +82,7 @@ async def run_all_quiet(
                     session_id=session_id,
                     progress=progress,
                     task_id=task_id,
+                    langfuse_tracing=langfuse_tracing,
                 )
                 tasks.append(task)
             
@@ -129,64 +134,70 @@ async def _run_single_quiet(
     session_id: str,
     progress: Progress,
     task_id: int,
+    langfuse_tracing: bool,
 ) -> dict:
     """Run a single benchmark in quiet mode."""
     async with semaphore:
-        try:
-            # Create RunContext with QuietObserver
-            run_context = RunContext()
-            observer = QuietObserver()
-            run_context.add_observer(observer)
-            
-            # Run benchmark
-            result, verifier_results = await run_single_benchmark(
-                model_name=cfg["model"],
-                scenario=cfg["scenario"],
-                mcp_config=mcp_config,
-                temperature=temperature,
-                max_output_tokens=max_output_tokens,
-                max_steps=max_steps,
-                tool_call_limit=tool_call_limit,
+        context = (
+            langfuse_run_context(
                 session_id=session_id,
-                run_num=cfg["run_num"],
-                run_context=run_context,
-                shared_http_client=shared_http_client,
-            )
-            
-            # Save result
-            result_file = save_benchmark_result(
-                session_mgr=session_mgr,
-                session_dir=session_dir,
-                result=result,
-                verifier_results=verifier_results,
+                run_label=cfg["label"],
                 model_name=cfg["model"],
-                scenario=cfg["scenario"],
+                scenario_id=cfg["scenario"].scenario_id,
+                run_number=cfg["run_num"],
                 batch_alias=cfg["batch_alias"],
-                run_num=cfg["run_num"],
-                temperature=temperature,
             )
-            
-            # Update progress
-            progress.advance(task_id)
-            
-            return {
-                "model": cfg["model"],
-                "scenario_id": cfg["scenario"].scenario_id,
-                "run_number": cfg["run_num"],
-                "success": result.success,
-                "file": str(result_file.relative_to(session_dir)),
-            }
-            
-        except Exception as exc:
-            # Update progress even on error
-            progress.advance(task_id)
-            
-            return {
-                "model": cfg["model"],
-                "scenario_id": cfg["scenario"].scenario_id,
-                "run_number": cfg["run_num"],
-                "success": False,
-                "error": str(exc),
-                "file": "",
-            }
+            if langfuse_tracing
+            else nullcontext()
+        )
 
+        with context:
+            try:
+                # Create RunContext with QuietObserver
+                run_context = RunContext()
+                observer = QuietObserver()
+                run_context.add_observer(observer)
+
+                run_result = await run_single_benchmark(
+                    model_name=cfg["model"],
+                    scenario=cfg["scenario"],
+                    mcp_config=mcp_config,
+                    temperature=temperature,
+                    max_output_tokens=max_output_tokens,
+                    max_steps=max_steps,
+                    tool_call_limit=tool_call_limit,
+                    session_id=session_id,
+                    run_num=cfg["run_num"],
+                    run_context=run_context,
+                    shared_http_client=shared_http_client,
+                )
+
+                result_file = save_benchmark_result(
+                    session_mgr=session_mgr,
+                    session_dir=session_dir,
+                    run_result=run_result,
+                    batch_alias=cfg["batch_alias"],
+                )
+
+                progress.advance(task_id)
+
+                return {
+                    "model": cfg["model"],
+                    "scenario_id": cfg["scenario"].scenario_id,
+                    "run_number": cfg["run_num"],
+                    "success": run_result.success,
+                    "file": str(result_file.relative_to(session_dir)),
+                }
+
+            except Exception as exc:
+                # Update progress even on error
+                progress.advance(task_id)
+
+                return {
+                    "model": cfg["model"],
+                    "scenario_id": cfg["scenario"].scenario_id,
+                    "run_number": cfg["run_num"],
+                    "success": False,
+                    "error": str(exc),
+                    "file": "",
+                }

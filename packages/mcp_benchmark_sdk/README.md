@@ -178,7 +178,7 @@ The `TestHarness` is the main entry point. It:
 
 A **scenario** defines:
 - A unique ID and name
-- One or more prompts (for multi-turn conversations)
+- A single prompt (multi-prompt scenarios are not supported)
 - Expected tools the agent should use
 - Verifiers to validate the outcome
 - Metadata (difficulty, tags, etc.)
@@ -517,9 +517,9 @@ A harness file is JSON with this structure:
 - `scenario_id`: Unique identifier
 - `name`: Human-readable name
 - `description`: What the scenario tests
-- `prompts`: Array of prompts (use multiple for multi-turn conversations)
+- `prompts`: Array containing exactly one prompt (multiple prompts are not supported)
 - `verifier`: Can be a single object or array of verifiers
-- `conversation_mode`: If `true`, concatenates all prompts; if `false`, uses only the first
+- `conversation_mode`: Reserved for future use (currently has no effect)
 - `metadata`: Arbitrary metadata for analysis
 
 **Verifier Types:**
@@ -697,7 +697,7 @@ task = Task(
     max_steps: int = 1000,           # Max steps
     metadata: dict[str, Any] = {},   # Arbitrary metadata
     database_id: str | None = None,  # Database isolation ID
-    conversation_mode: bool = False, # Multi-turn conversation
+    conversation_mode: bool = False, # Reserved for future use
 )
 ```
 
@@ -725,6 +725,8 @@ result.scenario_name: str            # Scenario name
 result.run_number: int               # Run number (for multiple runs)
 result.success: bool                 # Overall success (agent + verifiers)
 result.error: str | None             # Error message
+result.langsmith_url: str | None     # Optional LangSmith trace
+result.langfuse_url: str | None      # Optional Langfuse trace
 result.result: Result                # Agent result
 result.verifier_results: list[VerifierResult]  # Verifier results
 
@@ -749,35 +751,48 @@ See the `examples/` directory for complete examples:
 
 ## Advanced Features
 
-### LangSmith Integration
+### Telemetry Integration (LangSmith & Langfuse)
 
-The SDK supports automatic LangSmith tracing:
+The SDK now supports LangSmith and Langfuse side-by-side:
 
 ```python
-from mcp_benchmark_sdk import create_traced_agent, configure_langsmith
-
-# Configure LangSmith (optional, uses env vars by default)
-configure_langsmith(
-    api_key="your-api-key",
-    project="my-benchmarks",
-    enabled=True,
+from mcp_benchmark_sdk import (
+    configure_langfuse,
+    configure_langsmith,
+    create_traced_agent,
 )
 
-# Create agent with tracing
-agent = create_traced_agent("gpt-4o")
+# LangSmith (uses existing env vars if already set)
+configure_langsmith(project_name="benchmarks", enabled=True)
 
-# All runs are automatically traced
+# Langfuse
+configure_langfuse(
+    public_key="pk_...",
+    secret_key="sk_...",
+    base_url="https://cloud.langfuse.com",
+)
+
+agent = create_traced_agent("gpt-4o")
 result = await agent.run(task)
 
-# Get trace URL
-from mcp_benchmark_sdk import get_trace_url
-print(f"View trace: {get_trace_url()}")
+print(result.langsmith_url)
+print(result.langfuse_url)
 ```
 
 **Environment Variables:**
+
+LangSmith
+
 - `LANGCHAIN_API_KEY`: LangSmith API key
 - `LANGCHAIN_PROJECT`: Project name
 - `LANGCHAIN_TRACING_V2=true`: Enable tracing
+
+Langfuse
+
+- `LANGFUSE_PUBLIC_KEY`: Langfuse public key
+- `LANGFUSE_SECRET_KEY`: Langfuse secret key
+- `LANGFUSE_BASE_URL` *or* `LANGFUSE_HOST`: API endpoint
+- `LANGFUSE_TRACING_ENABLED=true`: (auto-set by `configure_langfuse`)
 
 ### Custom System Prompts
 
@@ -799,23 +814,11 @@ agent = ClaudeAgent(
 )
 ```
 
-### Multi-turn Conversations
+### Conversation Mode
 
-Set `conversation_mode: true` in your scenario to enable multi-turn:
+The `conversation_mode` field is reserved for future use and currently has no effect. All scenarios use single-prompt mode.
 
-```json
-{
-  "scenario_id": "multi_turn",
-  "conversation_mode": true,
-  "prompts": [
-    {"prompt_text": "Create a bug issue in DEMO"},
-    {"prompt_text": "Now assign it to John Smith"},
-    {"prompt_text": "Add a comment: 'This is urgent'"}
-  ]
-}
-```
-
-The agent will process all prompts in sequence within a single conversation.
+**Note:** Each scenario must contain exactly **one prompt**. Multiple prompts per scenario are not supported.
 
 ---
 

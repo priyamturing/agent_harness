@@ -2,10 +2,13 @@
 
 import asyncio
 import json
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
-from mcp_benchmark_sdk import RunObserver, VerifierResult
-from mcp_benchmark_sdk.harness.orchestrator import VerifierRunner
+from mcp_benchmark_sdk.agents.runtime import RunObserver
+from mcp_benchmark_sdk.harness.verifiers import VerifierResult
+
+if TYPE_CHECKING:
+    from mcp_benchmark_sdk.harness.orchestrator import VerifierRunner
 
 
 def _json_safe(value: object) -> object:
@@ -31,7 +34,7 @@ class TextualObserver(RunObserver):
         self,
         queue: asyncio.Queue,
         width: int = 100,
-        verifier_runner: Optional[VerifierRunner] = None,
+        verifier_runner: Optional["VerifierRunner"] = None,
     ):
         """Initialize textual observer.
 
