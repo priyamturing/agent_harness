@@ -1,11 +1,13 @@
 """Session persistence for benchmark runs."""
 
+from __future__ import annotations
+
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from mcp_benchmark_sdk import Result
+from mcp_benchmark_sdk.harness.orchestrator import RunResult
 
 
 class SessionManager:
@@ -48,11 +50,33 @@ class SessionManager:
 
             counter += 1
 
+    def _extract_provider_from_model(self, model_name: str) -> str:
+        """Extract provider name from model name.
+        
+        Args:
+            model_name: Full model name
+            
+        Returns:
+            Provider name (anthropic, openai, google, xai, etc.)
+        """
+        model_lower = model_name.lower()
+        if "claude" in model_lower or "anthropic" in model_lower:
+            return "anthropic"
+        elif "gpt" in model_lower or "openai" in model_lower or "o1" in model_lower:
+            return "openai"
+        elif "gemini" in model_lower or "google" in model_lower:
+            return "google"
+        elif "grok" in model_lower or "xai" in model_lower:
+            return "xai"
+        elif "qwen" in model_lower:
+            return "qwen"
+        else:
+            return "unknown"
+
     def save_result(
         self,
         session_dir: Path,
-        result: Result,
-        model_name: str,
+        run_result: RunResult,
         scenario_id: str,
         metadata: Optional[dict[str, Any]] = None,
     ) -> Path:
@@ -60,44 +84,51 @@ class SessionManager:
 
         Args:
             session_dir: Session directory
-            result: Result object
-            model_name: Model name
-            scenario_id: Scenario ID
-            metadata: Additional metadata
+            run_result: RunResult from harness containing agent result and verifiers
+            scenario_id: Scenario ID for filename
+            metadata: Additional metadata (merged with run_result metadata)
 
         Returns:
             Path to saved file
         """
-        # Build artifact
+        result_dict = run_result.to_dict()
+        
+        scenario_name = result_dict.get("scenario_name", scenario_id)
+        
         artifact = {
-            "model": model_name,
-            "scenario_id": scenario_id,
-            "success": result.success,
-            "database_id": result.database_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "metadata": {
-                **(result.metadata or {}),
-                **(metadata or {}),
-            },
-            "reasoning_traces": result.reasoning_traces,
-            "verifier_results": [
+            "conversation": result_dict["conversation"],
+            "run_label": f"{run_result.model}-{scenario_id}",
+            "database_id": result_dict.get("database_id"),
+            "provider": self._extract_provider_from_model(run_result.model),
+            "model": run_result.model,
+            "prompt_alias": scenario_name,
+            "status": "completed" if run_result.success else "failed",
+            "scenarios": [
                 {
-                    "name": vr.name,
-                    "success": vr.success,
-                    "expected": vr.expected_value,
-                    "actual": vr.actual_value,
-                    "comparison": vr.comparison_type,
-                    "error": vr.error,
+                    "scenario_id": scenario_name,
+                    "verifiers": result_dict["verifier_results"],
                 }
-                for vr in result.verifier_results
-            ]
-            if result.verifier_results
-            else [],
-            "error": result.error,
+            ],
         }
+        
+        if result_dict.get("reasoning_traces"):
+            artifact["reasoning_traces"] = result_dict["reasoning_traces"]
+        if run_result.error:
+            artifact["error"] = run_result.error
+        if run_result.result and run_result.result.langsmith_url:
+            artifact["langsmith_url"] = run_result.result.langsmith_url
+        if run_result.result and run_result.result.langfuse_url:
+            artifact["langfuse_url"] = run_result.result.langfuse_url
+        
+        combined_metadata = {**result_dict.get("metadata", {})}
+        if metadata:
+            combined_metadata.update(metadata)
+        if combined_metadata:
+            artifact["metadata"] = combined_metadata
+            
+        artifact["timestamp"] = datetime.now(timezone.utc).isoformat()
 
-        # Save to file
-        filename = f"{scenario_id}_{model_name}.json"
+        filename = f"{scenario_id}_{run_result.model}.json"
         safe_filename = "".join(c if c.isalnum() or c in "-_." else "_" for c in filename)
         filepath = session_dir / safe_filename
 
@@ -133,4 +164,3 @@ class SessionManager:
             json.dump(manifest, f, indent=2, ensure_ascii=False)
 
         return manifest_path
-

@@ -2,27 +2,35 @@
 
 __version__ = "0.1.0"
 
-# High-level agent classes
-from .agents import Agent, ClaudeAgent, GPTAgent, GeminiAgent, GrokAgent
-
-# Task/Result types
-from .tasks import Task, Result
-
-# MCP config
-from .mcp import MCPConfig, MCPClientManager
-
-# Verifiers
-from .verifiers import Verifier, DatabaseVerifier, VerifierResult
-
-# Runtime context and events
-from .runtime import RunContext, RunObserver
-
-# For advanced users
-from .parsers import ResponseParser, ParsedResponse
-from .tasks import AgentResponse, ToolCall, ToolResult
-
-# Configuration constants
-from .constants import (
+# Agent system (agents, tasks, runtime, MCP, parsers, telemetry, utils, constants)
+from .agents import (
+    Agent,
+    ClaudeAgent,
+    GPTAgent,
+    GeminiAgent,
+    GrokAgent,
+    Task,
+    Result,
+    AgentResponse,
+    ToolCall,
+    ToolResult,
+    MCPConfig,
+    MCPClientManager,
+    RunContext,
+    RunObserver,
+    ResponseParser,
+    ParsedResponse,
+    configure_langfuse,
+    configure_langsmith,
+    get_langfuse_client,
+    get_langfuse_trace_url,
+    get_langsmith_client,
+    is_langfuse_enabled,
+    is_tracing_enabled,
+    get_trace_url,
+    print_trace_summary,
+    with_tracing,
+    TracingAgent,
     DEFAULT_TOOL_CALL_LIMIT,
     DEFAULT_MAX_STEPS,
     DEFAULT_LLM_TIMEOUT_SECONDS,
@@ -38,6 +46,26 @@ from .constants import (
     RETRY_DEFAULT_MAX_ATTEMPTS,
     RETRY_TRANSIENT_STATUS_CODES,
     DATABASE_VERIFIER_TIMEOUT_SECONDS,
+    derive_sql_runner_url,
+)
+
+# Test harness (orchestration, scenarios, verifiers)
+from .harness import (
+    TestHarness,
+    TestHarnessConfig,
+    RunResult,
+    HarnessLoader,
+    load_harness_file,
+    load_harness_directory,
+    scenario_to_task,
+    create_agent,
+    create_traced_agent,
+    Scenario,
+    ScenarioPrompt,
+    VerifierDefinition,
+    Verifier,
+    DatabaseVerifier,
+    VerifierResult,
 )
 
 __all__ = [
@@ -47,6 +75,18 @@ __all__ = [
     "Result",
     "RunContext",
     "RunObserver",
+    # Telemetry
+    "configure_langfuse",
+    "configure_langsmith",
+    "get_langfuse_client",
+    "get_langfuse_trace_url",
+    "get_langsmith_client",
+    "is_langfuse_enabled",
+    "is_tracing_enabled",
+    "get_trace_url",
+    "print_trace_summary",
+    "with_tracing",
+    "TracingAgent",
     # Agents
     "ClaudeAgent",
     "GPTAgent",
@@ -63,6 +103,19 @@ __all__ = [
     "Verifier",
     "DatabaseVerifier",
     "VerifierResult",
+    # Test Harness
+    "TestHarness",
+    "TestHarnessConfig",
+    "RunResult",
+    "HarnessLoader",
+    "load_harness_file",
+    "load_harness_directory",
+    "scenario_to_task",
+    "create_agent",
+    "create_traced_agent",
+    "Scenario",
+    "ScenarioPrompt",
+    "VerifierDefinition",
     # Parsers
     "ResponseParser",
     "ParsedResponse",
@@ -82,5 +135,6 @@ __all__ = [
     "RETRY_DEFAULT_MAX_ATTEMPTS",
     "RETRY_TRANSIENT_STATUS_CODES",
     "DATABASE_VERIFIER_TIMEOUT_SECONDS",
+    # Utils
+    "derive_sql_runner_url",
 ]
-

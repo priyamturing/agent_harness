@@ -1,6 +1,6 @@
 """CLI configuration and defaults."""
 
-from mcp_benchmark_sdk import MCPConfig
+from mcp_benchmark_sdk.agents.mcp import MCPConfig
 
 # Default JIRA MCP configuration
 DEFAULT_JIRA_MCP = MCPConfig(
@@ -8,9 +8,6 @@ DEFAULT_JIRA_MCP = MCPConfig(
     url="http://localhost:8015/mcp",
     transport="streamable_http",
 )
-
-# Default SQL runner URL for verifiers
-DEFAULT_SQL_RUNNER_URL = "http://localhost:8015/api/sql-runner"
 
 # Maximum concurrent runs to prevent file descriptor exhaustion
 MAX_CONCURRENT_RUNS = 20
