@@ -13,11 +13,16 @@ from uuid import uuid4
 os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
 
 # Suppress gRPC fork warnings (common with Google libraries + asyncio)
-os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "1")
+os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "1"
+os.environ["GRPC_POLL_STRATEGY"] = "poll"
+os.environ["GRPC_VERBOSITY"] = "ERROR"
+
+# Suppress absl logging warnings (Google libraries)
+os.environ["ABSL_LOGGING_LEVEL"] = "ERROR"
 
 # Suppress Google GenAI schema warnings (additionalProperties not supported)
-# These are harmless warnings that clutter the output when using Gemini models
 logging.getLogger("google.ai.generativelanguage_v1beta.services.generative_service").setLevel(logging.ERROR)
+logging.getLogger("absl").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore", message=".*additionalProperties.*")
 
 import typer
@@ -52,10 +57,10 @@ def main(
         "--model",
         help="Model to run (can be specified multiple times)",
     ),
-    temperature: float = typer.Option(
-        0.1,
+    temperature: Optional[float] = typer.Option(
+        None,
         "--temperature",
-        help="Sampling temperature",
+        help="Sampling temperature (defaults to 0.1, or 1.0 for Claude models)",
     ),
     max_output_tokens: Optional[int] = typer.Option(
         None,
@@ -68,7 +73,7 @@ def main(
         help="Number of parallel runs per model/scenario",
     ),
     ui: str = typer.Option(
-        "auto",
+        "quiet",
         "--ui",
         help="UI mode: auto, plain, textual, quiet (progress bar + summary only)",
     ),
@@ -217,6 +222,14 @@ def main(
     
     session_name = harness_path.name if harness_path.is_dir() else harness_path.stem
 
+    contains_claude_model = _contains_claude_model(model)
+    if temperature is None:
+        resolved_temperature = 1.0 if contains_claude_model else 0.1
+        if contains_claude_model:
+            console.print("[dim]Detected Claude model(s); defaulting temperature to 1.0[/dim]")
+    else:
+        resolved_temperature = temperature
+
     # Run async main (all files together)
     try:
         asyncio.run(
@@ -224,7 +237,7 @@ def main(
                 scenario_batches=scenario_batches,
                 session_name=session_name,
                 models=model,
-                temperature=temperature,
+                temperature=resolved_temperature,
                 max_output_tokens=max_output_tokens,
                 runs=runs,
                 ui_mode=ui,
@@ -244,6 +257,21 @@ def main(
         import traceback
         traceback.print_exc()
         raise typer.Exit(1)
+
+
+def _contains_claude_model(models: list[str]) -> bool:
+    """Return True if any requested model targets Claude."""
+    return any(_is_claude_model(model_name) for model_name in models)
+
+
+def _is_claude_model(model_name: str) -> bool:
+    """Normalize provider prefixes and check if the underlying model is Claude."""
+    normalized = model_name.lower()
+    if ":" in normalized:
+        normalized = normalized.split(":", 1)[1]
+    if "/" in normalized:
+        normalized = normalized.split("/")[-1]
+    return normalized.startswith("claude")
 
 
 def _load_scenarios(harness_path: Path) -> list[dict]:
@@ -350,6 +378,7 @@ async def run_benchmark_batched(
             session_id=session_id,
             console=console,
             langfuse_tracing=langfuse_tracing,
+            runs_per_prompt=runs,
         )
     elif ui_mode == "textual" or (ui_mode == "auto" and len(all_run_configs) > 1):
         console.print(f"[dim]Total runs: {len(all_run_configs)}[/dim]")
@@ -368,6 +397,7 @@ async def run_benchmark_batched(
             session_id=session_id,
             console=console,
             langfuse_tracing=langfuse_tracing,
+            runs_per_prompt=runs,
         )
     else:
         console.print(f"[dim]Total runs: {len(all_run_configs)}[/dim]")
@@ -385,6 +415,7 @@ async def run_benchmark_batched(
             session_id=session_id,
             console=console,
             langfuse_tracing=langfuse_tracing,
+            runs_per_prompt=runs,
         )
 
 

@@ -111,6 +111,7 @@ def create_agent(
             **kwargs,
         )
     elif model_lower.startswith("gemini") or model_lower.startswith("models/gemini"):
+        # Supports both "gemini-2.0-flash" and "models/gemini-2.0-flash" (Google API format)
         return GeminiAgent(
             model=model_name,
             temperature=temperature,

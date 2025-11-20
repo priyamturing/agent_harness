@@ -10,9 +10,12 @@ dist/
 *.zip
 *.pytest_cache
 analysis_output/
-results/
 *.json
 *.csv
 .DS_Store
 .cursor/
 jira_benchmark_runner
+.vscode
+scripts/
+*.txt
+md_dump

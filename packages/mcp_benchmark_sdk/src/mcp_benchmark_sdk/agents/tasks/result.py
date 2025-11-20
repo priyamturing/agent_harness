@@ -146,7 +146,7 @@ class Result:
         content = getattr(msg, "content", None)
 
         if isinstance(content, list):
-            text = ""
+            text_parts: list[str] = []
             reasoning: list[str] = []
             for block in content:
                 if not isinstance(block, dict):
@@ -155,7 +155,10 @@ class Result:
                 if block_type == "thinking":
                     reasoning.append(block.get("thinking", ""))
                 elif block_type == "text":
-                    text = block.get("text", "")
+                    text_value = block.get("text", "")
+                    if text_value:
+                        text_parts.append(text_value)
+            text = "".join(text_parts)
             return text, reasoning
 
         if isinstance(content, str):
@@ -165,46 +168,159 @@ class Result:
 
     def _collect_tool_calls(self, msg: Any) -> list[dict[str, Any]]:
         entries: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        def _append_call(name: Any, args: Any, call_id: Optional[str]) -> None:
+            if not name and not call_id:
+                return
+            normalized_args = args if isinstance(args, dict) else args
+            key = call_id or f"{name}:{json.dumps(normalized_args, sort_keys=True)}"
+            if key in seen:
+                return
+            seen.add(key)
+            entries.append(self._tool_call_entry(name, normalized_args, call_id))
 
         content = getattr(msg, "content", None)
         if isinstance(content, list):
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_use":
-                    entries.append(self._tool_call_entry(block.get("name"), block.get("input", {})))
+                    _append_call(block.get("name"), block.get("input", {}), block.get("id"))
 
         tool_calls = getattr(msg, "tool_calls", None)
         if tool_calls:
             for tc in tool_calls:
                 if isinstance(tc, dict):
-                    entries.append(self._tool_call_entry(tc.get("name"), tc.get("args", {})))
+                    _append_call(tc.get("name"), tc.get("args", {}), tc.get("id"))
                 else:
-                    entries.append(
-                        self._tool_call_entry(
-                            getattr(tc, "name", None),
-                            getattr(tc, "arguments", {}),
-                        )
+                    _append_call(
+                        getattr(tc, "name", None),
+                        getattr(tc, "arguments", {}),
+                        getattr(tc, "id", None),
                     )
 
         return entries
 
-    def _tool_call_entry(self, name: Any, args: Any) -> dict[str, Any]:
+    def _tool_call_entry(self, name: Any, args: Any, call_id: Optional[str] = None) -> dict[str, Any]:
         formatted_args = args if isinstance(args, dict) else args
-        return {
+        entry: dict[str, Any] = {
             "type": "tool_call",
             "tool": name or "unknown",
             "args": formatted_args,
         }
+        if call_id:
+            entry["id"] = call_id
+        return entry
 
     def _format_tool_result(self, msg: Any) -> Optional[dict[str, Any]]:
         tool_name = getattr(msg, "name", "unknown")
         content = getattr(msg, "content", "")
 
         output = self._safe_json_load(content)
-        return {
+        entry = {
             "type": "tool_result",
             "tool": tool_name or "unknown",
             "output": output,
         }
+        tool_call_id = getattr(msg, "tool_call_id", None)
+        if tool_call_id:
+            entry["tool_call_id"] = tool_call_id
+        return entry
+
+    def build_benchmark_response(self) -> list[dict[str, Any]]:
+        """Create assistant/tool entries formatted for benchmark exports."""
+        if not self.messages:
+            return []
+
+        entries: list[dict[str, Any]] = []
+        iteration = 0
+        idx = 0
+        total = len(self.messages)
+
+        while idx < total:
+            msg = self.messages[idx]
+            msg_type = getattr(msg, "type", None)
+
+            if msg_type == "ai":
+                iteration += 1
+                content, reasoning_blocks = self._extract_ai_content(msg)
+                assistant_entry: dict[str, Any] = {
+                    "type": "assistant",
+                    "iteration": iteration,
+                }
+                if content:
+                    assistant_entry["content"] = content
+                if reasoning_blocks:
+                    assistant_entry["reasoning"] = reasoning_blocks
+
+                tool_calls = self._collect_tool_calls(msg)
+                if tool_calls:
+                    assistant_entry["tool_calls"] = [
+                        {
+                            "type": "tool_call",
+                            "name": tc.get("tool"),
+                            "args": tc.get("args", {}),
+                            "id": tc.get("id"),
+                        }
+                        for tc in tool_calls
+                    ]
+
+                entries.append(assistant_entry)
+
+                tool_messages = []
+                lookahead = idx + 1
+                while lookahead < total:
+                    next_msg = self.messages[lookahead]
+                    if getattr(next_msg, "type", None) != "tool":
+                        break
+                    tool_messages.append(next_msg)
+                    lookahead += 1
+
+                if tool_messages:
+                    entries.append(
+                        {
+                            "type": "tool_results",
+                            "iteration": iteration,
+                            "results": [
+                                self._format_benchmark_tool_result(tool_msg)
+                                for tool_msg in tool_messages
+                            ],
+                        }
+                    )
+
+                idx = lookahead
+                continue
+
+            idx += 1
+
+        return entries
+
+    def _format_benchmark_tool_result(self, tool_msg: Any) -> dict[str, Any]:
+        content = getattr(tool_msg, "content", "")
+        if isinstance(content, str):
+            output = content
+        else:
+            output = json.dumps(content, ensure_ascii=False)
+
+        additional_metadata = getattr(tool_msg, "additional_kwargs", {}) or {}
+        is_error = additional_metadata.get("is_error")
+        if isinstance(is_error, bool):
+            success = not is_error
+        else:
+            success = self._is_serialized_json(output)
+
+        return {
+            "tool_name": getattr(tool_msg, "name", "unknown"),
+            "tool_call_id": getattr(tool_msg, "tool_call_id", None),
+            "success": success,
+            "output": output,
+        }
+
+    def _is_serialized_json(self, value: str) -> bool:
+        try:
+            json.loads(value)
+            return True
+        except Exception:
+            return False
 
     def _format_role_message(self, msg: Any, role: str) -> Optional[dict[str, Any]]:
         content = getattr(msg, "content", None)

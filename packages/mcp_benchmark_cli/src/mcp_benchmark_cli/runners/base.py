@@ -1,6 +1,7 @@
 """Base utilities for benchmark runners."""
 
 import asyncio
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -8,7 +9,7 @@ import httpx
 from mcp_benchmark_sdk.agents.mcp import MCPConfig
 from mcp_benchmark_sdk.agents.runtime import RunContext
 from mcp_benchmark_sdk.harness.loader import scenario_to_task
-from mcp_benchmark_sdk.harness.orchestrator import RunResult, VerifierRunner
+from mcp_benchmark_sdk.harness.orchestrator import RunResult, VerifierRunner, ResultBundle
 
 from ..agent_factory import create_agent_from_string
 from ..session.manager import SessionManager
@@ -26,6 +27,7 @@ async def run_single_benchmark(
     run_num: int,
     run_context: RunContext,
     shared_http_client: httpx.AsyncClient,
+    batch_alias: Optional[str] = None,
 ) -> RunResult:
     """Run a single benchmark and return result.
     
@@ -45,6 +47,7 @@ async def run_single_benchmark(
     Returns:
         RunResult containing agent result, verifier results, and metadata
     """
+    start_time = time.perf_counter()
     agent = create_agent_from_string(
         model_name,
         temperature=temperature,
@@ -81,6 +84,9 @@ async def run_single_benchmark(
     else:
         error = result.error
     
+    elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+    prompt_text = scenario.prompts[0].prompt_text if scenario.prompts else ""
+
     return RunResult(
         model=model_name,
         scenario_id=scenario.scenario_id,
@@ -92,36 +98,42 @@ async def run_single_benchmark(
         error=error,
         metadata={
             "temperature": temperature,
+            "file_stem": batch_alias,
         }
+        if batch_alias
+        else {
+            "temperature": temperature,
+        },
+        prompt_text=prompt_text,
+        execution_time_ms=elapsed_ms,
     )
 
 
-def save_benchmark_result(
+def persist_model_reports(
     session_mgr: SessionManager,
     session_dir: Path,
-    run_result: RunResult,
-    batch_alias: str,
-) -> Path:
-    """Save benchmark result to file.
-    
-    Args:
-        session_mgr: Session manager
-        session_dir: Session directory
-        run_result: RunResult from benchmark execution
-        batch_alias: Batch alias for filename
-        
-    Returns:
-        Path to saved result file
-    """
-    scenario_id = f"{batch_alias}_{run_result.scenario_id}_run{run_result.run_number}"
-    
-    result_file = session_mgr.save_result(
-        session_dir,
-        run_result,
-        scenario_id,
-        metadata={
-            "batch_alias": batch_alias,
-        },
-    )
-    return result_file
+    run_results: list[RunResult],
+    runs_per_prompt: int,
+    default_harness_name: str,
+) -> dict[tuple[str, str], str]:
+    """Persist aggregated result files and return mapping for manifests."""
+    if not run_results:
+        return {}
 
+    bundle = ResultBundle(
+        harness_name=default_harness_name,
+        run_results=run_results,
+    )
+    model_files = bundle.build_model_reports(
+        runs_per_prompt=runs_per_prompt,
+        reset_database_between_runs=False,
+    )
+
+    mapping: dict[tuple[str, str], str] = {}
+    for model_file in model_files:
+        path = session_mgr.save_model_result(session_dir, model_file)
+        mapping[(model_file.harness_name, model_file.model_name)] = str(
+            path.relative_to(session_dir)
+        )
+
+    return mapping

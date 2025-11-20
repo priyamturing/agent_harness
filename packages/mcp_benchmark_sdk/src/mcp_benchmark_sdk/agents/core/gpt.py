@@ -27,6 +27,7 @@ _REASONING_MODELS = frozenset({
     "gpt-5-mini",
     "gpt-5-nano",
     "gpt-5-pro",
+    "gpt-5.1-codex",
     "o4-mini",
 })
 
@@ -134,7 +135,7 @@ class GPTAgent(Agent):
         config["use_responses_api"] = True
 
         config.update(self.extra_kwargs)
-        self._apply_llm_tracing_callbacks(config)
+        config = self._get_llm_config_with_callbacks(config)
 
         llm = ChatOpenAI(**config)
         return llm.bind_tools(self._tools) if self._tools else llm

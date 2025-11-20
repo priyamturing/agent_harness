@@ -43,7 +43,7 @@ def create_agent_from_string(
     model_lower = model.lower()
     
     if model_lower.startswith("qwen"):
-        return QwenAgent(
+        agent = QwenAgent(
             model=model,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
@@ -51,9 +51,10 @@ def create_agent_from_string(
             system_prompt=system_prompt,
             **kwargs,
         )
+        return with_tracing(agent)
 
     if model_lower.startswith("openrouter"):
-        return OpenRouterAgent(
+        agent = OpenRouterAgent(
             model=model,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
@@ -61,8 +62,8 @@ def create_agent_from_string(
             system_prompt=system_prompt,
             **kwargs,
         )
+        return with_tracing(agent)
     
-    # Use SDK's create_agent and wrap with tracing if enabled
     agent = sdk_create_agent(
         model=model,
         temperature=temperature,
@@ -72,7 +73,6 @@ def create_agent_from_string(
         **kwargs,
     )
     
-    # Apply tracing wrapper if LangSmith is enabled
     return with_tracing(agent)
 
 

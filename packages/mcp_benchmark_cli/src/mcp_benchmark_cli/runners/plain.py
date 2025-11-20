@@ -1,5 +1,6 @@
 """Plain console mode runner with streaming output."""
 
+import time
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
@@ -14,7 +15,7 @@ from ..session.manager import SessionManager
 from ..tracing import langfuse_run_context
 from ..ui import ConsoleObserver
 from mcp_benchmark_sdk.harness.orchestrator import RunResult
-from .base import save_benchmark_result
+from .base import run_single_benchmark, persist_model_reports
 
 
 async def run_all_plain(
@@ -29,6 +30,7 @@ async def run_all_plain(
     session_id: str,
     console: Console,
     langfuse_tracing: bool,
+    runs_per_prompt: int,
 ) -> None:
     """Run all configs in plain console mode.
     
@@ -46,6 +48,7 @@ async def run_all_plain(
     """
     session_mgr = SessionManager(RESULTS_ROOT)
     run_summaries = []
+    run_results = []
     
     # Create shared HTTP client for all verification runs
     async with httpx.AsyncClient(timeout=30.0) as shared_http_client:
@@ -66,6 +69,8 @@ async def run_all_plain(
 
             with context:
                 try:
+                    start_time = time.perf_counter()
+                    
                     # Import here to avoid circular dependency
                     from mcp_benchmark_sdk.harness.loader import scenario_to_task
                     from mcp_benchmark_sdk.harness.orchestrator import VerifierRunner
@@ -124,6 +129,9 @@ async def run_all_plain(
                     else:
                         error = result.error
 
+                    elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+                    prompt_text = cfg["scenario"].prompts[0].prompt_text if cfg["scenario"].prompts else ""
+                    
                     run_result = RunResult(
                         model=cfg["model"],
                         scenario_id=cfg["scenario"].scenario_id,
@@ -135,21 +143,19 @@ async def run_all_plain(
                         error=error,
                         metadata={
                             "temperature": temperature,
-                        }
+                            "file_stem": cfg["batch_alias"],
+                        },
+                        prompt_text=prompt_text,
+                        execution_time_ms=elapsed_ms,
                     )
-
-                    result_file = save_benchmark_result(
-                        session_mgr=session_mgr,
-                        session_dir=session_dir,
-                        run_result=run_result,
-                        batch_alias=cfg["batch_alias"],
-                    )
+                    
+                    run_results.append(run_result)
                     run_summaries.append({
                         "model": cfg["model"],
                         "scenario_id": cfg["scenario"].scenario_id,
                         "run_number": cfg["run_num"],
                         "success": run_result.success,
-                        "file": str(result_file.relative_to(session_dir)),
+                        "file_key": (cfg["batch_alias"], cfg["model"]),
                     })
 
                     if run_result.success:
@@ -159,14 +165,47 @@ async def run_all_plain(
 
                 except Exception as exc:
                     console.print(f"[red]Error:[/red] {exc}")
+                    elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+                    prompt_text = cfg["scenario"].prompts[0].prompt_text if cfg["scenario"].prompts else ""
+                    failure_result = RunResult(
+                        model=cfg["model"],
+                        scenario_id=cfg["scenario"].scenario_id,
+                        scenario_name=cfg["scenario"].name,
+                        run_number=cfg["run_num"],
+                        success=False,
+                        result=None,
+                        verifier_results=[],
+                        error=str(exc),
+                        metadata={
+                            "temperature": temperature,
+                            "file_stem": cfg["batch_alias"],
+                        },
+                        prompt_text=prompt_text,
+                        execution_time_ms=elapsed_ms,
+                    )
+                    run_results.append(failure_result)
                     run_summaries.append({
                         "model": cfg["model"],
                         "scenario_id": cfg["scenario"].scenario_id,
                         "run_number": cfg["run_num"],
                         "success": False,
-                        "file": "",
+                        "file_key": (cfg["batch_alias"], cfg["model"]),
                         "error": str(exc),
                     })
+    
+    # Persist model reports
+    file_mapping = persist_model_reports(
+        session_mgr=session_mgr,
+        session_dir=session_dir,
+        run_results=run_results,
+        runs_per_prompt=runs_per_prompt,
+        default_harness_name=session_name,
+    )
+    
+    # Update summaries with file paths
+    for summary in run_summaries:
+        file_key = summary.pop("file_key", None)
+        summary["file"] = file_mapping.get(file_key, "")
     
     # Save manifest and print summary
     session_mgr.save_session_manifest(session_dir, run_summaries, name=session_name)

@@ -174,7 +174,7 @@ class ClaudeAgent(Agent):
             config["max_tokens"] = self.max_output_tokens
 
         config.update(self.extra_kwargs)
-        self._apply_llm_tracing_callbacks(config)
+        config = self._get_llm_config_with_callbacks(config)
 
         llm = ChatAnthropic(**config)
         return llm.bind_tools(self._tools) if self._tools else llm

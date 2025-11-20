@@ -103,7 +103,7 @@ class GrokAgent(Agent):
             config["extra_body"] = body
 
         config.update(self.extra_kwargs)
-        self._apply_llm_tracing_callbacks(config)
+        config = self._get_llm_config_with_callbacks(config)
 
         llm = ChatXAI(**config)
         return llm.bind_tools(self._tools) if self._tools else llm

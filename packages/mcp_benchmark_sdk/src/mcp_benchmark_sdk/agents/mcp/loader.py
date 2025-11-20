@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Mapping, Optional
 
 from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
+from ..constants import RETRY_DEFAULT_MAX_ATTEMPTS
+from ..utils import compute_retry_delay
 from .config import MCPConfig
 from .tool_fixer import fix_tool_schemas
 
@@ -66,12 +69,26 @@ class MCPClientManager:
         server_configs: dict[str, Mapping[str, Any]] = {config.name: connection}
         self._config = config
 
-        try:
+        async def _attempt_connect() -> None:
             self._client = MultiServerMCPClient(server_configs)  # type: ignore[arg-type]
             raw_tools = await self._client.get_tools()
-            
+
             # Fix tools with reserved keyword parameters
             self._tools = fix_tool_schemas(raw_tools)
+
+        max_attempts = max(2, RETRY_DEFAULT_MAX_ATTEMPTS)
+
+        try:
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    await _attempt_connect()
+                    break
+                except Exception:
+                    self._client = None
+                    if attempt == max_attempts:
+                        raise
+                    delay = compute_retry_delay(attempt)
+                    await asyncio.sleep(delay)
         except Exception as exc:
             # Extract root cause from exception chain/groups
             root_cause = exc
@@ -139,4 +156,3 @@ class MCPClientManager:
             Optional[str]: Server name from MCPConfig if connected, None otherwise.
         """
         return self._config.name if self._config else None
-

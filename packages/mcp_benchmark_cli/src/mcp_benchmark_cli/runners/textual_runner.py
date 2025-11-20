@@ -1,9 +1,11 @@
 """Textual UI mode runner with multi-pane interface."""
 
 import asyncio
-from contextlib import nullcontext
+import sys
+import time
+from contextlib import nullcontext, contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 from mcp_benchmark_sdk.agents.mcp import MCPConfig
@@ -15,7 +17,40 @@ from ..session.manager import SessionManager
 from ..tracing import langfuse_run_context
 from ..ui import TextualObserver, MultiRunApp
 from mcp_benchmark_sdk.harness.orchestrator import RunResult
-from .base import save_benchmark_result
+from .base import persist_model_reports
+
+
+@contextmanager
+def _suppress_grpc_warnings():
+    """Suppress gRPC and absl warnings that break the Textual UI."""
+    class FilteredStderr:
+        def __init__(self, original_stderr):
+            self.original = original_stderr
+            
+        def write(self, text):
+            if isinstance(text, str):
+                lines_to_filter = [
+                    "fork_posix.cc",
+                    "absl::InitializeLog()",
+                    "WARNING: All log messages before",
+                    "Other threads are currently calling into gRPC",
+                ]
+                if not any(pattern in text for pattern in lines_to_filter):
+                    return self.original.write(text)
+            return len(text)
+            
+        def flush(self):
+            return self.original.flush()
+            
+        def __getattr__(self, name):
+            return getattr(self.original, name)
+    
+    old_stderr = sys.stderr
+    sys.stderr = FilteredStderr(old_stderr)
+    try:
+        yield
+    finally:
+        sys.stderr = old_stderr
 
 
 async def run_all_with_textual(
@@ -31,6 +66,7 @@ async def run_all_with_textual(
     session_id: str,
     console: Console,
     langfuse_tracing: bool,
+    runs_per_prompt: int,
 ) -> None:
     """Run all configs with Textual UI (all files batched together).
     
@@ -66,6 +102,9 @@ async def run_all_with_textual(
         await textual_app.run_async()
 
     async def run_all_tasks():
+        run_results: list[RunResult] = []
+        run_summaries: list[dict[str, Any]] = []
+
         # Create shared HTTP client for all verification runs
         async with httpx.AsyncClient(timeout=30.0) as shared_http_client:
             # Limit concurrency to prevent resource exhaustion
@@ -79,8 +118,6 @@ async def run_all_with_textual(
                     mcp_config=mcp_config,
                     temperature=temperature,
                     max_output_tokens=max_output_tokens,
-                    session_mgr=session_mgr,
-                    session_dir=session_dir,
                     semaphore=semaphore,
                     max_steps=max_steps,
                     tool_call_limit=tool_call_limit,
@@ -93,8 +130,6 @@ async def run_all_with_textual(
             # Run all tasks in parallel
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Build run summaries
-        run_summaries = []
         for cfg, result in zip(run_configs, results):
             if isinstance(result, Exception):
                 run_summaries.append({
@@ -105,8 +140,32 @@ async def run_all_with_textual(
                     "error": str(result),
                     "file": "",
                 })
-            elif isinstance(result, dict):
-                run_summaries.append(result)
+                continue
+
+            run_results.append(result)
+            summary = {
+                "model": result.model,
+                "scenario_id": result.scenario_id,
+                "run_number": result.run_number,
+                "success": result.success,
+                "file_key": ((result.metadata or {}).get("file_stem") or cfg["batch_alias"], result.model),
+            }
+            if not result.success and (result.error or (result.result and result.result.error)):
+                summary["error"] = result.error or (result.result.error if result.result else None)
+            run_summaries.append(summary)
+
+        file_mapping = persist_model_reports(
+            session_mgr=session_mgr,
+            session_dir=session_dir,
+            run_results=run_results,
+            runs_per_prompt=runs_per_prompt,
+            default_harness_name=session_name,
+        )
+
+        for summary in run_summaries:
+            file_key = summary.pop("file_key", None)
+            if "file" not in summary:
+                summary["file"] = file_mapping.get(file_key, "")
 
         # Save session manifest
         session_mgr.save_session_manifest(
@@ -127,11 +186,12 @@ async def run_all_with_textual(
         # Now signal completion
         completion_event.set()
 
-    # Run both concurrently
-    await asyncio.gather(
-        run_textual_app(),
-        run_all_tasks(),
-    )
+    # Run both concurrently with stderr filtering to prevent gRPC warnings from breaking the UI
+    with _suppress_grpc_warnings():
+        await asyncio.gather(
+            run_textual_app(),
+            run_all_tasks(),
+        )
     
     # After Textual UI closes, print summary to console
     console.print("\n")
@@ -181,15 +241,13 @@ async def _run_single_textual(
     mcp_config: MCPConfig,
     temperature: float,
     max_output_tokens: Optional[int],
-    session_mgr: SessionManager,
-    session_dir: Path,
     semaphore: asyncio.Semaphore,
     max_steps: int,
     tool_call_limit: int,
     shared_http_client: httpx.AsyncClient,
     session_id: str,
     langfuse_tracing: bool,
-) -> dict:
+) -> RunResult:
     """Run a single benchmark with textual observer."""
     async with semaphore:
         context = (
@@ -207,6 +265,7 @@ async def _run_single_textual(
 
         with context:
             try:
+                start_time = time.perf_counter()
                 # Import here to avoid circular dependency
                 from mcp_benchmark_sdk.harness.loader import scenario_to_task
                 from mcp_benchmark_sdk.harness.orchestrator import VerifierRunner
@@ -268,6 +327,9 @@ async def _run_single_textual(
                 else:
                     error = result.error
 
+                elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+                prompt_text = cfg["scenario"].prompts[0].prompt_text if cfg["scenario"].prompts else ""
+
                 run_result = RunResult(
                     model=cfg["model"],
                     scenario_id=cfg["scenario"].scenario_id,
@@ -279,14 +341,10 @@ async def _run_single_textual(
                     error=error,
                     metadata={
                         "temperature": temperature,
-                    }
-                )
-
-                result_file = save_benchmark_result(
-                    session_mgr=session_mgr,
-                    session_dir=session_dir,
-                    run_result=run_result,
-                    batch_alias=cfg["batch_alias"],
+                        "file_stem": cfg["batch_alias"],
+                    },
+                    prompt_text=prompt_text,
+                    execution_time_ms=elapsed_ms,
                 )
 
                 if run_result.success:
@@ -294,16 +352,27 @@ async def _run_single_textual(
                 else:
                     await queue.put(f"[bold red]✗ Failed: {run_result.error or 'Unknown'}[/bold red]\n")
 
-                return {
-                    "model": cfg["model"],
-                    "scenario_id": cfg["scenario"].scenario_id,
-                    "run_number": cfg["run_num"],
-                    "success": run_result.success,
-                    "file": str(result_file.relative_to(session_dir)),
-                }
+                return run_result
 
             except Exception as exc:
-                await queue.put(f"[bold red]Error: {exc}[/bold red]\n")
+                await queue.put(f"[bold red]✗ Failed: {exc}[/bold red]\n")
                 import traceback
                 await queue.put(traceback.format_exc())
-                raise
+                elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+                prompt_text = cfg["scenario"].prompts[0].prompt_text if cfg["scenario"].prompts else ""
+                return RunResult(
+                    model=cfg["model"],
+                    scenario_id=cfg["scenario"].scenario_id,
+                    scenario_name=cfg["scenario"].name,
+                    run_number=cfg["run_num"],
+                    success=False,
+                    result=None,
+                    verifier_results=[],
+                    error=str(exc),
+                    metadata={
+                        "temperature": temperature,
+                        "file_stem": cfg["batch_alias"],
+                    },
+                    prompt_text=prompt_text,
+                    execution_time_ms=elapsed_ms,
+                )

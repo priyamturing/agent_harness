@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import warnings
@@ -19,6 +20,16 @@ from ..parsers import GoogleResponseParser, ResponseParser
 from ..tasks import AgentResponse
 from ..utils import retry_with_backoff
 from .base import Agent
+
+# Suppress noisy schema warnings emitted by the Google GenAI SDK when tools include
+# additionalProperties (a common pattern for MCP schema definitions).
+warnings.filterwarnings(
+    "ignore",
+    message=r"Key 'additionalProperties' is not supported in schema, ignoring",
+)
+logging.getLogger(
+    "google.ai.generativelanguage_v1beta.services.generative_service"
+).setLevel(logging.ERROR)
 
 
 @contextmanager
@@ -62,6 +73,7 @@ class GeminiAgent(Agent):
         temperature: float = 0.1,
         max_output_tokens: Optional[int] = None,
         thinking_budget: Optional[int] = None,
+        thinking_level: Optional[str] = None,
         include_thoughts: bool = True,
         system_prompt: Optional[str] = None,
         tool_call_limit: Optional[int] = DEFAULT_TOOL_CALL_LIMIT,
@@ -79,6 +91,8 @@ class GeminiAgent(Agent):
             thinking_budget (Optional[int]): Optional token budget allocated 
                 for the thinking process. Can also be set via GOOGLE_THINKING_BUDGET 
                 environment variable. If None, no explicit budget is set.
+            thinking_level (Optional[str]): Optional thinking level ("low", "high").
+                Controls the depth of reasoning. If None, model defaults are used.
             include_thoughts (bool): Whether to include thought process in the 
                 response. When True, intermediate reasoning is visible.
             system_prompt (Optional[str]): Optional system prompt for the agent. 
@@ -102,6 +116,7 @@ class GeminiAgent(Agent):
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
         self.thinking_budget = thinking_budget
+        self.thinking_level = thinking_level
         self.include_thoughts = include_thoughts
         self.extra_kwargs = kwargs
 
@@ -112,6 +127,7 @@ class GeminiAgent(Agent):
             Union[BaseChatModel, Runnable]: Configured ChatGoogleGenerativeAI 
                 instance, optionally with tools bound. Automatically handles:
                 - Thinking budget from instance setting or GOOGLE_THINKING_BUDGET env var
+                - Thinking level configuration
                 - Thought inclusion configuration
                 - Schema warning suppression during tool binding
         """
@@ -134,17 +150,18 @@ class GeminiAgent(Agent):
         if self.thinking_budget is not None:
             config["thinking_budget"] = self.thinking_budget
 
+        if self.thinking_level is not None:
+            config["thinking_level"] = self.thinking_level
+
         config["include_thoughts"] = self.include_thoughts
 
         config.update(self.extra_kwargs)
-        self._apply_llm_tracing_callbacks(config)
+        config = self._get_llm_config_with_callbacks(config)
 
-        llm = ChatGoogleGenerativeAI(**config)
-        
-        # Suppress schema warnings when binding tools (Google GenAI prints warnings about additionalProperties)
-        if self._tools:
-            with _suppress_schema_warnings():
-                return llm.bind_tools(self._tools)
+        with _suppress_schema_warnings():
+            llm = ChatGoogleGenerativeAI(**config)
+            if self._tools:
+                llm = llm.bind_tools(self._tools)
         return llm
 
     async def get_response(self, messages: list[BaseMessage]) -> tuple[AgentResponse, AIMessage]:
@@ -170,7 +187,8 @@ class GeminiAgent(Agent):
         llm = self._llm  # Capture for type narrowing
 
         async def _invoke():
-            return await llm.ainvoke(messages)
+            with _suppress_schema_warnings():
+                return await llm.ainvoke(messages)
 
         ai_message = await retry_with_backoff(
             _invoke,

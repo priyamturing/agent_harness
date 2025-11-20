@@ -10,6 +10,7 @@ dependencies = [
     "rich>=13.7",
     "python-dotenv>=1.0.1",
     "textual>=0.58.0",
+    "tqdm>=4.67.1",
 ]
 
 [build-system]
@@ -27,4 +28,3 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-

@@ -159,14 +159,18 @@ def get_langfuse_client() -> Optional["Langfuse"]:
         return None
 
 
-def _get_or_create_langfuse_handler(agent: "Agent") -> Optional[Any]:
+def _get_or_create_langfuse_handler(agent_or_wrapper: Union["Agent", "TracingAgent"]) -> Optional[Any]:
+    """Get Langfuse handler from TracingAgent wrapper or create for bare agent (backward compat)."""
     if not is_langfuse_enabled() or LangchainCallbackHandler is None:
         return None
 
-    handler = getattr(agent, _LANGFUSE_HANDLER_ATTR, None)
+    if isinstance(agent_or_wrapper, TracingAgent):
+        return agent_or_wrapper._langfuse_handler
+
+    handler = getattr(agent_or_wrapper, _LANGFUSE_HANDLER_ATTR, None)
     if handler is None:
         handler = LangchainCallbackHandler()
-        setattr(agent, _LANGFUSE_HANDLER_ATTR, handler)
+        setattr(agent_or_wrapper, _LANGFUSE_HANDLER_ATTR, handler)
     return handler
 
 
@@ -185,10 +189,15 @@ def _merge_callbacks(existing: Any, handler: Any) -> list[Any]:
     return [existing, handler]
 
 
-def maybe_attach_langfuse_callback(agent: "Agent", config: dict[str, Any]) -> None:
-    """Inject Langfuse callback into an LLM configuration dict if enabled."""
+def maybe_attach_langfuse_callback(agent_or_wrapper: Union["Agent", "TracingAgent"], config: dict[str, Any]) -> None:
+    """Inject Langfuse callback into an LLM configuration dict if enabled.
+    
+    Note: This function is kept for backward compatibility but should not be needed
+    when using TracingAgent wrapper, as the wrapper handles callback injection
+    via context managers.
+    """
 
-    handler = _get_or_create_langfuse_handler(agent)
+    handler = _get_or_create_langfuse_handler(agent_or_wrapper)
     if not handler:
         return
 
@@ -196,13 +205,13 @@ def maybe_attach_langfuse_callback(agent: "Agent", config: dict[str, Any]) -> No
     config["callbacks"] = _merge_callbacks(callbacks, handler)
 
 
-def get_langfuse_trace_url(agent: "Agent") -> Optional[str]:
+def get_langfuse_trace_url(agent_or_wrapper: Union["Agent", "TracingAgent"]) -> Optional[str]:
     """Return the Langfuse trace URL for the most recent run if available."""
 
     if not is_langfuse_enabled():
         return None
 
-    handler = getattr(agent, _LANGFUSE_HANDLER_ATTR, None)
+    handler = _get_or_create_langfuse_handler(agent_or_wrapper)
     if not handler:
         return None
 
@@ -482,10 +491,11 @@ def print_trace_summary(project_name: Optional[str] = None, limit: int = 10) -> 
 
 
 class TracingAgent:
-    """Wrapper that adds LangSmith tracing to any agent.
+    """Wrapper that adds LangSmith and Langfuse tracing to any agent.
     
     This decorator pattern keeps the Agent class clean while providing
-    full LangSmith observability when needed.
+    full observability when needed. Handles both LangSmith and Langfuse
+    tracing without requiring any changes to the agent implementation.
     
     Usage:
         agent = ClaudeAgent()
@@ -494,13 +504,21 @@ class TracingAgent:
     """
     
     def __init__(self, agent: "Agent"):
-        """Wrap an agent with LangSmith tracing capabilities.
+        """Wrap an agent with tracing capabilities.
         
         Args:
             agent (Agent): The agent instance to wrap (ClaudeAgent, GPTAgent, etc.).
                 All method calls are delegated to this wrapped agent.
         """
         self._agent = agent
+        self._langfuse_handler: Optional[Any] = None
+        
+        if is_langfuse_enabled() and LangchainCallbackHandler is not None:
+            try:
+                self._langfuse_handler = LangchainCallbackHandler()
+            except Exception:
+                self._langfuse_handler = None
+        
         self.__dict__.update({k: v for k, v in agent.__dict__.items() if not k.startswith('_')})
     
     def __getattr__(self, name: str):
@@ -569,6 +587,9 @@ class TracingAgent:
                     "database_id": db_id,
                 }
                 
+                if self._langfuse_handler:
+                    self._agent._tracing_callbacks = [self._langfuse_handler]
+                
                 with langfuse_client.start_as_current_span(
                     name=trace_name,
                     input=input_data,
@@ -589,10 +610,28 @@ class TracingAgent:
                     }
                     span.update(output=output_data)
                     
-                    self._attach_external_trace_urls(result)
+                    if not result.langfuse_url:
+                        try:
+                            trace_id = None
+                            if hasattr(span, "trace_id"):
+                                trace_id = span.trace_id  # type: ignore[attr-defined]
+                            elif hasattr(span, "_trace_id"):
+                                trace_id = span._trace_id  # type: ignore[attr-defined]
+                            elif hasattr(span, "get_trace_id"):
+                                trace_id = span.get_trace_id()  # type: ignore[attr-defined]
+                            
+                            if trace_id:
+                                langfuse_client.flush()
+                                result.langfuse_url = langfuse_client.get_trace_url(trace_id=trace_id)
+                        except Exception as e:
+                            pass
+                    
                     return result
         
         if not langsmith_enabled:
+            if self._langfuse_handler:
+                self._agent._tracing_callbacks = [self._langfuse_handler]
+            
             result = await self._agent.run(task, max_steps, run_context=run_context)
             self._attach_external_trace_urls(result)
             return result
@@ -604,6 +643,9 @@ class TracingAgent:
                     "prompt": task.prompt[:500] if task and task.prompt else "N/A",
                     "database_id": db_id,
                 }
+                
+                if self._langfuse_handler:
+                    self._agent._tracing_callbacks = [self._langfuse_handler]
                 
                 with langfuse_client.start_as_current_span(
                     name=trace_name,
@@ -628,11 +670,29 @@ class TracingAgent:
                         }
                         span.update(output=output_data)
                         
-                        self._attach_external_trace_urls(result)
+                        if not result.langfuse_url:
+                            try:
+                                trace_id = None
+                                if hasattr(span, "trace_id"):
+                                    trace_id = span.trace_id  # type: ignore[attr-defined]
+                                elif hasattr(span, "_trace_id"):
+                                    trace_id = span._trace_id  # type: ignore[attr-defined]
+                                elif hasattr(span, "get_trace_id"):
+                                    trace_id = span.get_trace_id()  # type: ignore[attr-defined]
+                                
+                                if trace_id:
+                                    langfuse_client.flush()
+                                    result.langfuse_url = langfuse_client.get_trace_url(trace_id=trace_id)
+                            except Exception as e:
+                                pass
+                        
                         return result
                     
                     return await _traced_run()
 
+        if self._langfuse_handler:
+            self._agent._tracing_callbacks = [self._langfuse_handler]
+        
         @traceable(name=trace_name, run_type="chain", metadata=trace_metadata)
         async def _traced_run():
             result = await self._agent.run(task, max_steps, run_context=run_context)
@@ -659,7 +719,8 @@ class TracingAgent:
         return await self._agent.call_tools(*args, **kwargs)
 
     def _attach_external_trace_urls(self, result: "Result") -> None:
-        langfuse_url = get_langfuse_trace_url(self._agent)
+        """Attach trace URLs from wrapper's handlers to result."""
+        langfuse_url = get_langfuse_trace_url(self)
         if langfuse_url and not result.langfuse_url:
             result.langfuse_url = langfuse_url
 

@@ -16,13 +16,15 @@ from langchain_core.tools import BaseTool
 from ..constants import (
     DEFAULT_MAX_STEPS,
     DEFAULT_TOOL_CALL_LIMIT,
+    HTTP_CLIENT_TIMEOUT_SECONDS,
+    RETRY_DEFAULT_MAX_ATTEMPTS,
     TOOL_CALL_ID_HEX_LENGTH,
 )
 from ..mcp import MCPClientManager 
 from ..parsers import  ResponseParser
 from ..runtime import RunContext
 from ..tasks import AgentResponse, Result, Task, ToolCall, ToolResult
-from ..telemetry import get_langfuse_trace_url, maybe_attach_langfuse_callback
+from ..utils.retry import retry_with_backoff
 
 
 class Agent(ABC):
@@ -58,24 +60,21 @@ class Agent(ABC):
         self._llm: Union[BaseChatModel, Runnable, None] = None
         
         self._owns_run_context: bool = False
+        self._tracing_callbacks: list[Any] = []
 
-    def _apply_llm_tracing_callbacks(self, config: dict[str, Any]) -> None:
-        """Allow subclasses to inject telemetry callbacks before building LLMs."""
-        maybe_attach_langfuse_callback(self, config)
-
-    def _get_tool_invoke_config(self) -> dict[str, Any]:
-        """Get configuration dict with callbacks for tool invocations."""
-        config: dict[str, Any] = {}
-        maybe_attach_langfuse_callback(self, config)
+    def _get_llm_config_with_callbacks(self, config: dict[str, Any]) -> dict[str, Any]:
+        """Inject tracing callbacks into LLM config if present.
+        
+        This is called by concrete agent implementations to add callbacks
+        set by TracingAgent wrapper for observability.
+        """
+        if self._tracing_callbacks:
+            existing_callbacks = config.get("callbacks", [])
+            if isinstance(existing_callbacks, list):
+                config["callbacks"] = existing_callbacks + self._tracing_callbacks
+            else:
+                config["callbacks"] = self._tracing_callbacks
         return config
-
-    def _attach_langfuse_trace_url(self, result: Result) -> None:
-        if result.langfuse_url:
-            return
-
-        url = get_langfuse_trace_url(self)
-        if url:
-            result.langfuse_url = url
 
     # ============ High-Level API ============
 
@@ -126,7 +125,6 @@ class Agent(ABC):
         try:
             await self.initialize(task, run_context)
             result = await self._execute_loop(max_steps, run_context)
-            self._attach_langfuse_trace_url(result)
             return result
         finally:
             await self.cleanup()
@@ -273,22 +271,23 @@ class Agent(ABC):
                 continue
 
             try:
-                # Get config with tracing callbacks (Langfuse, etc.)
-                tool_config = self._get_tool_invoke_config()
+                tool_config = {"callbacks": self._tracing_callbacks} if self._tracing_callbacks else {}
                 
-                # Invoke tool - check for async vs sync
-                # Some LangChain tools are async (ainvoke), others are sync (invoke)
-                # For sync tools, run in thread pool to avoid blocking the event loop
-                if hasattr(tool, "ainvoke"):
-                    output = await tool.ainvoke(tc.arguments, config=tool_config)
-                else:
-                    loop = asyncio.get_running_loop()
-                    output = await loop.run_in_executor(None, lambda: tool.invoke(tc.arguments, config=tool_config))
+                async def _invoke_tool() -> Any:
+                    if hasattr(tool, "ainvoke"):
+                        return await tool.ainvoke(tc.arguments, config=tool_config)  # type: ignore[union-attr]
+                    else:
+                        loop = asyncio.get_running_loop()
+                        return await loop.run_in_executor(None, lambda: tool.invoke(tc.arguments, config=tool_config))  # type: ignore[union-attr]
+                
+                output = await retry_with_backoff(
+                    _invoke_tool,
+                    max_retries=RETRY_DEFAULT_MAX_ATTEMPTS,
+                    timeout_seconds=HTTP_CLIENT_TIMEOUT_SECONDS,
+                )
 
                 serialized = self._normalize_tool_output(output)
                 
-                # MCP protocol requires JSON-serializable responses
-                # If serialization fails, it's a protocol violation by the MCP server
                 try:
                     content_str = json.dumps(serialized, ensure_ascii=False)
                 except TypeError as e:
@@ -314,7 +313,15 @@ class Agent(ABC):
                     )
 
             except Exception as exc:
-                error_msg = f"Tool '{tc.name}' failed: {exc!r}"
+                root_cause = exc
+                
+                if hasattr(exc, 'exceptions') and exc.exceptions:  # type: ignore[attr-defined]
+                    root_cause = exc.exceptions[0]  # type: ignore[attr-defined]
+                
+                while root_cause.__cause__ is not None:
+                    root_cause = root_cause.__cause__
+                
+                error_msg = f"Tool '{tc.name}' failed: {type(root_cause).__name__}: {root_cause}"
                 results.append(
                     ToolResult(
                         content=error_msg,
@@ -389,6 +396,7 @@ class Agent(ABC):
                     content=result.content,
                     tool_call_id=result.tool_call_id,
                     name=tc.name,
+                    additional_kwargs={"is_error": result.is_error},
                 )
             )
 

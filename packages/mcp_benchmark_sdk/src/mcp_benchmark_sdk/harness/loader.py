@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 import json
 from pathlib import Path
 from typing import Any, Optional
@@ -12,6 +13,35 @@ from ..agents import MCPConfig, Task
 from .verifiers import DatabaseVerifier, Verifier
 from .scenario import Scenario, ScenarioPrompt, VerifierDefinition
 
+
+def round_robin_configs(
+    configs_by_model: dict[str, list[dict[str, Any]]]
+) -> list[dict[str, Any]]:
+    """Interleave run configs per model to avoid front-loading a single model."""
+    if not configs_by_model:
+        return []
+
+    queues: dict[str, deque[dict[str, Any]]] = {
+        model: deque(configs)
+        for model, configs in configs_by_model.items()
+        if configs
+    }
+    order: list[dict[str, Any]] = []
+    model_cycle: deque[str] = deque(queues.keys())
+
+    while model_cycle:
+        model = model_cycle.popleft()
+        queue = queues.get(model)
+        if not queue:
+            continue
+
+        order.append(queue.popleft())
+        if queue:
+            model_cycle.append(model)
+        else:
+            queues.pop(model, None)
+
+    return order
 
 def load_harness_file(path: Path) -> list[Scenario]:
     """Load scenarios from a JSON harness file.

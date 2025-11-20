@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from mcp_benchmark_sdk.harness.orchestrator import RunResult
+from mcp_benchmark_sdk.harness.orchestrator import RunResult, ModelResultFile
 
 
 class SessionManager:
@@ -134,6 +134,24 @@ class SessionManager:
 
         with filepath.open("w", encoding="utf-8") as f:
             json.dump(artifact, f, indent=2, ensure_ascii=False)
+
+        return filepath
+
+    def save_model_result(
+        self,
+        session_dir: Path,
+        model_result: ModelResultFile,
+    ) -> Path:
+        """Persist aggregated model results for a harness file."""
+        filename = f"{model_result.harness_name}_{model_result.model_name}.json"
+        safe_filename = "".join(
+            c if c.isalnum() or c in "-_." else "_" for c in filename
+        ).strip("_")
+        safe_filename = safe_filename or "results.json"
+        filepath = session_dir / safe_filename
+
+        with filepath.open("w", encoding="utf-8") as f:
+            json.dump(model_result.payload, f, indent=2, ensure_ascii=False)
 
         return filepath
 
