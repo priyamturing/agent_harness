@@ -19,3 +19,5 @@ jira_benchmark_runner
 scripts/
 *.txt
 md_dump
+
+old_deperecated
