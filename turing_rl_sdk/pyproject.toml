@@ -1,0 +1,34 @@
+[project]
+name = "turing-rl-sdk"
+version = "0.1.0"
+description = "SDK for building and running MCP-based LLM agent benchmarks"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "langchain>=0.3.26",
+    "langchain-core>=0.3.79",
+    "langchain-openai>=0.3.35",
+    "langchain-anthropic>=0.3.17",
+    "langchain-google-genai>=2.0.9",
+    "langchain-xai>=0.2.5",
+    "langchain-mcp-adapters>=0.1.12",
+    "mcp>=1.14.1",
+    "pydantic>=2.11.7",
+    "httpx>=0.28.1",
+    "langsmith>=0.4.42",
+    "langfuse>=3.9.3"
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project.optional-dependencies]
+dev = ["ruff>=0.4.10", "pytest>=8.2", "pytest-asyncio>=0.23.0"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
